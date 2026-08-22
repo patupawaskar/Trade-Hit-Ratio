@@ -7,6 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <style>
   :root{
     --bg: #0A0D10;
@@ -31,11 +32,11 @@
     min-height:100vh;
     padding: 32px 20px 80px;
   }
-  .wrap{max-width:1080px;margin:0 auto;}
+  .wrap{max-width:1100px;margin:0 auto;}
 
   header{
     display:flex; justify-content:space-between; align-items:flex-end;
-    margin-bottom:28px; flex-wrap:wrap; gap:16px;
+    margin-bottom:24px; flex-wrap:wrap; gap:16px;
     border-bottom:1px solid var(--line); padding-bottom:20px;
   }
   .brand{font-family:'Space Grotesk',sans-serif; font-weight:700; font-size:22px; letter-spacing:-0.01em;}
@@ -43,14 +44,14 @@
   .sub{color:var(--text-dim); font-size:12.5px; margin-top:4px;}
   .clock{font-size:12px; color:var(--text-dim); text-align:right;}
 
-  .upload-row{
-    display:flex; gap:12px; align-items:center; margin-bottom:28px; flex-wrap:wrap;
+  .controls-row{
+    display:flex; gap:12px; align-items:center; margin-bottom:16px; flex-wrap:wrap;
   }
   .dropzone{
     flex:1; min-width:260px;
     border:1px dashed var(--line);
     border-radius:var(--radius);
-    padding:18px 20px;
+    padding:16px 20px;
     display:flex; align-items:center; gap:14px;
     cursor:pointer;
     background:var(--panel);
@@ -73,6 +74,20 @@
     transition:all .15s ease; white-space:nowrap;
   }
   .btn:hover{color:var(--text); border-color:var(--text-dim);}
+  .btn.primary{border-color:var(--amber); color:var(--amber);}
+
+  .threshold-row{
+    display:flex; align-items:center; gap:10px; background:var(--panel);
+    border:1px solid var(--line); border-radius:var(--radius); padding:12px 16px;
+    margin-bottom:20px; flex-wrap:wrap;
+  }
+  .threshold-row label{font-size:12px; color:var(--text-dim);}
+  .threshold-row input[type=number]{
+    width:70px; background:var(--panel-2); border:1px solid var(--line); border-radius:6px;
+    color:var(--amber); font-family:'Space Grotesk',sans-serif; font-weight:600;
+    font-size:14px; padding:6px 8px; text-align:center;
+  }
+  .threshold-row .note{font-size:11px; color:var(--text-dim);}
 
   #empty{
     text-align:center; padding:60px 20px; color:var(--text-dim);
@@ -116,44 +131,24 @@
   .stat.loss .v{color:var(--loss);}
   .stat.amber .v{color:var(--amber);}
 
-  .streak-panel{
+  .panel{
     background:var(--panel); border:1px solid var(--line); border-radius:var(--radius);
-    padding:22px 24px; margin-bottom:20px;
+    margin-bottom:20px; overflow:hidden;
   }
-  .streak-title{font-family:'Space Grotesk',sans-serif; font-size:13px; color:var(--text-dim); margin-bottom:14px;}
-  .ledger{display:flex; flex-wrap:wrap; gap:5px;}
-  .tick{
-    width:16px; height:26px; border-radius:3px; cursor:default; position:relative;
-    background:var(--win-dim);
-  }
-  .tick.loss{background:var(--loss-dim);}
-  .tick.win::after, .tick.loss::after{
-    content:''; position:absolute; left:0; right:0; bottom:0; border-radius:3px;
-  }
-  .tick.win{background:var(--win-dim);}
-  .tick.win{ box-shadow: inset 0 0 0 1px rgba(52,211,153,0.25); }
-  .tick.loss{ box-shadow: inset 0 0 0 1px rgba(242,99,122,0.25); }
-  .tick.win{background:linear-gradient(180deg, var(--win) 0%, var(--win) 40%, var(--win-dim) 40%);}
-  .tick.loss{background:linear-gradient(180deg, var(--loss) 0%, var(--loss) 40%, var(--loss-dim) 40%);}
-  .tick:hover{outline:1px solid var(--text-dim);}
-  .tick[title]{}
-
-  table{width:100%; border-collapse:collapse; font-size:12.5px;}
-  .table-panel{
-    background:var(--panel); border:1px solid var(--line); border-radius:var(--radius);
-    overflow:hidden;
-  }
-  .table-head{
+  .panel-head{
     display:flex; justify-content:space-between; align-items:center;
     padding:16px 20px; border-bottom:1px solid var(--line);
   }
-  .table-head b{font-family:'Space Grotesk',sans-serif; font-size:13px;}
+  .panel-head b{font-family:'Space Grotesk',sans-serif; font-size:13px;}
+  .panel-head span{color:var(--text-dim); font-size:11.5px;}
+
+  table{width:100%; border-collapse:collapse; font-size:12.5px;}
   thead th{
     text-align:left; padding:10px 20px; color:var(--text-dim);
     font-weight:500; font-size:10.5px; text-transform:uppercase; letter-spacing:.05em;
-    border-bottom:1px solid var(--line);
+    border-bottom:1px solid var(--line); white-space:nowrap;
   }
-  tbody td{padding:10px 20px; border-bottom:1px solid var(--line);}
+  tbody td{padding:10px 20px; border-bottom:1px solid var(--line); white-space:nowrap;}
   tbody tr:last-child td{border-bottom:none;}
   tbody tr:hover{background:var(--panel-2);}
   .pnl-pos{color:var(--win);}
@@ -164,6 +159,18 @@
   }
   .pill.win{background:var(--win-dim); color:var(--win);}
   .pill.loss{background:var(--loss-dim); color:var(--loss);}
+  .pill.open{background:var(--panel-2); color:var(--amber); border:1px solid var(--amber);}
+  .pill.buy{background:#12331f; color:var(--win);}
+  .pill.sell{background:#331420; color:var(--loss);}
+
+  .cur-input{
+    width:100px; background:var(--panel-2); border:1px solid var(--line); border-radius:6px;
+    color:var(--text); font-family:'IBM Plex Mono',monospace; font-size:12px; padding:5px 8px;
+  }
+  .warn-box{
+    background:#2A2210; border:1px solid #5C4A16; color:var(--amber);
+    border-radius:8px; padding:10px 16px; font-size:11.5px; margin-bottom:16px;
+  }
 
   footer{text-align:center; color:var(--text-dim); font-size:11px; margin-top:30px;}
 </style>
@@ -174,31 +181,41 @@
   <header>
     <div>
       <div class="brand">HIT<span>RATIO</span>.</div>
-      <div class="sub">Personal trade ledger — win rate & P&L breakdown</div>
+      <div class="sub">Personal trade ledger — FIFO position tracking, INR</div>
     </div>
     <div class="clock" id="fileInfo">No file loaded</div>
   </header>
 
-  <div class="upload-row">
+  <div class="controls-row">
     <label class="dropzone" id="dropzone">
       <div class="dz-icon">↑</div>
       <div class="dz-text">
-        <b>Drop your trades CSV here, or click to browse</b>
-        <small>Columns: date, symbol, side, entry, exit, qty, pnl</small>
+        <b>Drop your broker tradebook (.xlsx) or a CSV here, or click to browse</b>
+        <small>Works directly with Zerodha-style tradebook exports, or columns: date, symbol, type (buy/sell), price, qty</small>
       </div>
-      <input type="file" id="fileInput" accept=".csv">
+      <input type="file" id="fileInput" accept=".csv,.xlsx,.xls">
     </label>
     <button class="btn" id="sampleBtn">Download sample CSV</button>
     <button class="btn" id="clearBtn">Clear</button>
   </div>
 
+  <div class="threshold-row">
+    <label for="thresholdInput">Hit threshold:</label>
+    <input type="number" id="thresholdInput" value="15" min="0" step="0.5">
+    <span class="note">% gain from entry price that counts as a "hit" (works on partial sells too — the rest stays open)</span>
+  </div>
+
+  <div id="warnings"></div>
+
   <div id="empty">
     <b>No trades loaded yet.</b><br>
-    Upload a CSV export of your trades to calculate hit ratio, average win/loss, and R:R.
+    Upload your broker's tradebook (.xlsx) directly, or a CSV, to calculate hit ratio, open positions, and P&amp;L.
     <div class="cols">
-      date, symbol, side, entry, exit, qty, pnl<br>
-      2026-01-05, AAPL, long, 190.20, 194.10, 10, 39.00<br>
-      2026-01-06, TSLA, short, 250.00, 255.40, 5, -27.00
+      Broker tradebook: Symbol, Trade Date, Trade Type, Quantity, Price columns — detected automatically<br><br>
+      Plain CSV: date, symbol, type, price, qty<br>
+      2026-01-05, AAPL, buy, 100, 100<br>
+      2026-01-10, AAPL, sell, 120, 50<br>
+      2026-01-15, AAPL, buy, 110, 70
     </div>
   </div>
 
@@ -218,56 +235,77 @@
         <div class="hero-title" id="heroSummary">Waiting for data…</div>
         <div class="stat-grid">
           <div class="stat win">
-            <div class="v" id="statWins">0</div>
-            <div class="k">Wins</div>
+            <div class="v" id="statHits">0</div>
+            <div class="k">Hits</div>
           </div>
           <div class="stat loss">
-            <div class="v" id="statLosses">0</div>
-            <div class="k">Losses</div>
+            <div class="v" id="statMisses">0</div>
+            <div class="k">Non-Hits</div>
           </div>
           <div class="stat">
-            <div class="v" id="statTotal">0</div>
-            <div class="k">Total Trades</div>
+            <div class="v" id="statClosed">0</div>
+            <div class="k">Closed Segments</div>
           </div>
           <div class="stat amber">
             <div class="v" id="statRR">0.00</div>
             <div class="k">R : R</div>
           </div>
           <div class="stat win">
-            <div class="v" id="statAvgWin">$0</div>
-            <div class="k">Avg Win</div>
+            <div class="v" id="statAvgGain">0%</div>
+            <div class="k">Avg Gain (Hits)</div>
           </div>
           <div class="stat loss">
-            <div class="v" id="statAvgLoss">$0</div>
-            <div class="k">Avg Loss</div>
+            <div class="v" id="statAvgLoss">0%</div>
+            <div class="k">Avg Loss (Non-Hits)</div>
           </div>
           <div class="stat">
-            <div class="v" id="statExpectancy">$0</div>
-            <div class="k">Expectancy / Trade</div>
+            <div class="v" id="statRealized">₹0</div>
+            <div class="k">Realized P&amp;L</div>
           </div>
           <div class="stat">
-            <div class="v" id="statNetPnl">$0</div>
-            <div class="k">Net P&amp;L</div>
+            <div class="v" id="statOpenQty">0</div>
+            <div class="k">Open Shares (all symbols)</div>
           </div>
         </div>
       </div>
     </div>
 
-    <div class="streak-panel">
-      <div class="streak-title">Trade sequence (chronological order, oldest → newest — hover a bar for details)</div>
-      <div class="ledger" id="ledger"></div>
-    </div>
-
-    <div class="table-panel">
-      <div class="table-head">
-        <b>Trade Log</b>
-        <span style="color:var(--text-dim); font-size:11.5px;" id="rowCount">0 rows</span>
+    <div class="panel">
+      <div class="panel-head">
+        <b>Open Positions</b>
+        <span>Enter a current price to check unrealized hit status</span>
       </div>
       <table>
         <thead>
-          <tr><th>Date</th><th>Symbol</th><th>Side</th><th>Entry</th><th>Exit</th><th>Qty</th><th>P&amp;L</th><th>Result</th></tr>
+          <tr><th>Symbol</th><th>Open Qty</th><th>Avg Cost (FIFO)</th><th>Current Price</th><th>Unrealized %</th><th>Status</th></tr>
         </thead>
-        <tbody id="tbody"></tbody>
+        <tbody id="openTbody"></tbody>
+      </table>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <b>Closed Trade Results</b>
+        <span id="closedCount">0 segments</span>
+      </div>
+      <table>
+        <thead>
+          <tr><th>#</th><th>Symbol</th><th>Qty</th><th>Buy Price</th><th>Sell Price</th><th>Gain %</th><th>Result</th><th>Buy Trade#</th><th>Sell Trade#</th></tr>
+        </thead>
+        <tbody id="closedTbody"></tbody>
+      </table>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <b>Transaction Log</b>
+        <span id="rowCount">0 rows</span>
+      </div>
+      <table>
+        <thead>
+          <tr><th>Trade #</th><th>Date</th><th>Symbol</th><th>Type</th><th>Price</th><th>Qty</th></tr>
+        </thead>
+        <tbody id="txTbody"></tbody>
       </table>
     </div>
   </div>
@@ -276,161 +314,312 @@
 </div>
 
 <script>
-const STORAGE_KEY = 'hitratio_trades_v1';
-let trades = [];
+const STORAGE_KEY = 'hitratio_tx_v2';
+const PRICE_KEY = 'hitratio_currentprices_v2';
+const THRESH_KEY = 'hitratio_threshold_v2';
+let txRows = [];
+let currentPrices = {};
 
 const fileInput = document.getElementById('fileInput');
 const dropzone = document.getElementById('dropzone');
 const fileInfo = document.getElementById('fileInfo');
 const emptyState = document.getElementById('empty');
 const dashboard = document.getElementById('dashboard');
+const thresholdInput = document.getElementById('thresholdInput');
 
-function normalizeRow(row){
-  // Accept flexible header casing/naming
+function fmtINR(n){
+  const sign = n < 0 ? '-' : '';
+  return sign + '₹' + Math.abs(n).toLocaleString('en-IN', {maximumFractionDigits:2, minimumFractionDigits:2});
+}
+function fmtPct(n){
+  const sign = n >= 0 ? '+' : '';
+  return sign + n.toFixed(2) + '%';
+}
+
+function normalizeRow(row, idx){
   const get = (keys) => {
     for(const k of Object.keys(row)){
       if(keys.includes(k.trim().toLowerCase())) return row[k];
     }
     return undefined;
   };
-  const date = get(['date','datetime','time']) || '';
-  const symbol = get(['symbol','ticker','asset']) || '';
-  const side = (get(['side','direction']) || '').toString().toLowerCase();
-  const entry = parseFloat(get(['entry','entry price','buy'])) || null;
-  const exit = parseFloat(get(['exit','exit price','sell'])) || null;
-  const qty = parseFloat(get(['qty','quantity','size'])) || null;
-
-  let pnl = get(['pnl','p&l','profit','profit/loss','result_pnl']);
-  pnl = pnl !== undefined ? parseFloat(pnl) : NaN;
-
-  if(isNaN(pnl)){
-    // derive from entry/exit/qty/side if pnl column missing
-    if(entry !== null && exit !== null){
-      const q = qty || 1;
-      pnl = side === 'short' ? (entry - exit) * q : (exit - entry) * q;
-    } else {
-      // fallback to a Result column (win/loss)
-      const resultCol = (get(['result','outcome']) || '').toString().toLowerCase();
-      pnl = resultCol.startsWith('w') ? 1 : resultCol.startsWith('l') ? -1 : 0;
-    }
+  let dateRaw = get(['date','datetime','time','trade date','order execution time']) || '';
+  let date = dateRaw;
+  if(dateRaw instanceof Date){
+    date = dateRaw.toISOString().split('T')[0];
+  } else if(typeof dateRaw === 'number'){
+    // Excel serial date fallback (in case cellDates parsing missed it)
+    const parsed = XLSX.SSF.parse_date_code(dateRaw);
+    if(parsed) date = `${parsed.y}-${String(parsed.m).padStart(2,'0')}-${String(parsed.d).padStart(2,'0')}`;
   }
-  return { date, symbol, side, entry, exit, qty, pnl };
+  const symbol = (get(['symbol','ticker','asset']) || '').toString().trim().toUpperCase();
+  const type = (get(['type','side','action','trade type']) || '').toString().trim().toLowerCase();
+  const price = parseFloat(get(['price','entry','exit','trade price']));
+  const qty = parseFloat(get(['qty','quantity','size']));
+  return { idx, date, symbol, type, price, qty };
+}
+
+function parseXlsx(file, callback){
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    try{
+      const data = new Uint8Array(e.target.result);
+      const wb = XLSX.read(data, {type:'array', cellDates:true});
+      const sheetName = wb.SheetNames[0];
+      const sheet = wb.Sheets[sheetName];
+      const rows = XLSX.utils.sheet_to_json(sheet, {header:1, raw:true, defval:''});
+
+      // Broker exports have a few metadata rows before the real header row.
+      // Find the row that actually contains column names like "Symbol" + "Trade Date"/"Quantity".
+      let headerRowIdx = -1;
+      for(let i=0;i<rows.length;i++){
+        const cells = rows[i].map(c => (c||'').toString().trim().toLowerCase());
+        const hasSymbol = cells.some(c => c === 'symbol');
+        const hasDateOrQty = cells.some(c => c.includes('trade date') || c === 'date' || c === 'quantity');
+        if(hasSymbol && hasDateOrQty){ headerRowIdx = i; break; }
+      }
+      if(headerRowIdx === -1){ callback([], 'Could not find a header row with Symbol/Trade Date/Quantity columns in this file.'); return; }
+
+      const headers = rows[headerRowIdx].map(h => (h||'').toString().trim());
+      const dataRows = [];
+      for(let i=headerRowIdx+1;i<rows.length;i++){
+        const r = rows[i];
+        if(!r || r.every(c => c === '' || c === null || c === undefined)) continue;
+        const obj = {};
+        headers.forEach((h,idx) => { if(h) obj[h] = r[idx]; });
+        dataRows.push(obj);
+      }
+      callback(dataRows, null);
+    } catch(err){
+      callback([], err.message);
+    }
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+function computeFifo(rows, thresholdPct){
+  // sort chronologically, stable on original order
+  const sorted = [...rows].filter(r => r.symbol && (r.type === 'buy' || r.type === 'sell') && !isNaN(r.price) && !isNaN(r.qty))
+    .sort((a,b) => {
+      const da = new Date(a.date).getTime() || 0;
+      const db = new Date(b.date).getTime() || 0;
+      if(da !== db) return da - db;
+      return a.idx - b.idx;
+    });
+
+  const lots = {}; // symbol -> [{price, qtyRemaining, buyDate, tradeNum}]
+  const closed = [];
+  const warnings = [];
+  const txLog = [];
+
+  sorted.forEach((r, i) => {
+    const tradeNum = i + 1;
+    txLog.push({...r, tradeNum});
+    if(!lots[r.symbol]) lots[r.symbol] = [];
+
+    if(r.type === 'buy'){
+      lots[r.symbol].push({price: r.price, qtyRemaining: r.qty, buyDate: r.date, tradeNum});
+    } else if(r.type === 'sell'){
+      let remaining = r.qty;
+      while(remaining > 0 && lots[r.symbol].length > 0){
+        const lot = lots[r.symbol][0];
+        const consumed = Math.min(lot.qtyRemaining, remaining);
+        const gainPct = ((r.price - lot.price) / lot.price) * 100;
+        closed.push({
+          symbol: r.symbol, qty: consumed, buyPrice: lot.price, sellPrice: r.price,
+          gainPct, isHit: gainPct >= thresholdPct,
+          buyTradeNum: lot.tradeNum, sellTradeNum: tradeNum
+        });
+        lot.qtyRemaining -= consumed;
+        remaining -= consumed;
+        if(lot.qtyRemaining <= 1e-9) lots[r.symbol].shift();
+      }
+      if(remaining > 1e-9){
+        warnings.push(`Trade #${tradeNum}: sold ${remaining} more ${r.symbol} than currently held (short selling isn't tracked) — excess ignored.`);
+      }
+    }
+  });
+
+  // open positions
+  const openPositions = {};
+  Object.keys(lots).forEach(sym => {
+    const remainingLots = lots[sym];
+    if(remainingLots.length === 0) return;
+    const totalQty = remainingLots.reduce((s,l) => s + l.qtyRemaining, 0);
+    const totalCost = remainingLots.reduce((s,l) => s + l.qtyRemaining * l.price, 0);
+    openPositions[sym] = { qty: totalQty, avgCost: totalCost / totalQty };
+  });
+
+  return { txLog, closed, openPositions, warnings };
 }
 
 function render(){
-  if(!trades.length){
+  if(!txRows.length){
     emptyState.style.display = 'block';
     dashboard.style.display = 'none';
     fileInfo.textContent = 'No file loaded';
+    document.getElementById('warnings').innerHTML = '';
     return;
   }
   emptyState.style.display = 'none';
   dashboard.style.display = 'block';
 
-  const wins = trades.filter(t => t.pnl > 0);
-  const losses = trades.filter(t => t.pnl < 0);
-  const total = trades.length;
-  const hitRatio = total ? (wins.length / total) * 100 : 0;
+  const thresholdPct = parseFloat(thresholdInput.value) || 0;
+  const { txLog, closed, openPositions, warnings } = computeFifo(txRows, thresholdPct);
 
-  const avgWin = wins.length ? wins.reduce((s,t)=>s+t.pnl,0) / wins.length : 0;
-  const avgLossAbs = losses.length ? Math.abs(losses.reduce((s,t)=>s+t.pnl,0) / losses.length) : 0;
-  const rr = avgLossAbs ? (avgWin / avgLossAbs) : 0;
-  const netPnl = trades.reduce((s,t)=>s+t.pnl,0);
-  const winProb = hitRatio/100;
-  const expectancy = (winProb * avgWin) - ((1-winProb) * avgLossAbs);
+  document.getElementById('warnings').innerHTML = warnings.map(w => `<div class="warn-box">⚠ ${w}</div>`).join('');
+
+  const hits = closed.filter(c => c.isHit);
+  const misses = closed.filter(c => !c.isHit);
+  const totalClosed = closed.length;
+  const hitRatio = totalClosed ? (hits.length / totalClosed) * 100 : 0;
+
+  const avgGain = hits.length ? hits.reduce((s,c)=>s+c.gainPct,0) / hits.length : 0;
+  const avgLossAbs = misses.length ? Math.abs(misses.reduce((s,c)=>s+c.gainPct,0) / misses.length) : 0;
+  const rr = avgLossAbs ? (avgGain / avgLossAbs) : 0;
+  const realizedPnl = closed.reduce((s,c) => s + (c.sellPrice - c.buyPrice) * c.qty, 0);
+  const openQtyTotal = Object.values(openPositions).reduce((s,p) => s + p.qty, 0);
 
   document.getElementById('hitPct').textContent = hitRatio.toFixed(1) + '%';
-  document.getElementById('heroSummary').textContent = `${total} trades logged · ${wins.length} wins / ${losses.length} losses`;
-  document.getElementById('statWins').textContent = wins.length;
-  document.getElementById('statLosses').textContent = losses.length;
-  document.getElementById('statTotal').textContent = total;
+  document.getElementById('heroSummary').textContent = `${totalClosed} closed segments · ${hits.length} hits / ${misses.length} non-hits · threshold ${thresholdPct}%`;
+  document.getElementById('statHits').textContent = hits.length;
+  document.getElementById('statMisses').textContent = misses.length;
+  document.getElementById('statClosed').textContent = totalClosed;
   document.getElementById('statRR').textContent = rr.toFixed(2);
-  document.getElementById('statAvgWin').textContent = fmtMoney(avgWin);
-  document.getElementById('statAvgLoss').textContent = fmtMoney(-avgLossAbs);
-  document.getElementById('statExpectancy').textContent = fmtMoney(expectancy);
-  document.getElementById('statNetPnl').textContent = fmtMoney(netPnl);
+  document.getElementById('statAvgGain').textContent = fmtPct(avgGain);
+  document.getElementById('statAvgLoss').textContent = fmtPct(-avgLossAbs);
+  document.getElementById('statRealized').textContent = fmtINR(realizedPnl);
+  document.getElementById('statOpenQty').textContent = openQtyTotal;
 
   const ring = document.getElementById('ringFg');
   const circumference = 2 * Math.PI * 78;
-  const filled = (hitRatio/100) * circumference;
+  const filled = totalClosed ? (hitRatio/100) * circumference : 0;
   ring.setAttribute('stroke-dasharray', `${filled} ${circumference}`);
   ring.style.stroke = hitRatio >= 50 ? 'var(--win)' : 'var(--loss)';
 
-  // ledger ticks
-  const ledger = document.getElementById('ledger');
-  ledger.innerHTML = '';
-  trades.forEach(t => {
-    const div = document.createElement('div');
-    div.className = 'tick ' + (t.pnl > 0 ? 'win' : 'loss');
-    div.title = `${t.date || ''} ${t.symbol || ''} — ${fmtMoney(t.pnl)}`;
-    ledger.appendChild(div);
-  });
-
-  // table
-  const tbody = document.getElementById('tbody');
-  tbody.innerHTML = '';
-  trades.forEach(t => {
+  // Open positions table
+  const openTbody = document.getElementById('openTbody');
+  openTbody.innerHTML = '';
+  const symbols = Object.keys(openPositions).sort();
+  if(symbols.length === 0){
+    openTbody.innerHTML = '<tr><td colspan="6" style="color:var(--text-dim);">No open positions</td></tr>';
+  }
+  symbols.forEach(sym => {
+    const pos = openPositions[sym];
+    const cur = currentPrices[sym];
+    let unrealPct = null, status = '—';
+    if(cur !== undefined && !isNaN(cur)){
+      unrealPct = ((cur - pos.avgCost) / pos.avgCost) * 100;
+      status = unrealPct >= thresholdPct
+        ? '<span class="pill win">Hit</span>'
+        : '<span class="pill loss">Below threshold</span>';
+    } else {
+      status = '<span class="pill open">Enter price</span>';
+    }
     const tr = document.createElement('tr');
     tr.innerHTML = `
-      <td>${t.date || '—'}</td>
-      <td>${t.symbol || '—'}</td>
-      <td>${t.side || '—'}</td>
-      <td>${t.entry ?? '—'}</td>
-      <td>${t.exit ?? '—'}</td>
-      <td>${t.qty ?? '—'}</td>
-      <td class="${t.pnl >= 0 ? 'pnl-pos' : 'pnl-neg'}">${fmtMoney(t.pnl)}</td>
-      <td><span class="pill ${t.pnl > 0 ? 'win' : 'loss'}">${t.pnl > 0 ? 'Win' : 'Loss'}</span></td>
+      <td><b>${sym}</b></td>
+      <td>${pos.qty}</td>
+      <td>${fmtINR(pos.avgCost)}</td>
+      <td><input type="number" class="cur-input" data-symbol="${sym}" placeholder="₹ price" value="${cur !== undefined ? cur : ''}"></td>
+      <td class="${unrealPct !== null ? (unrealPct >= 0 ? 'pnl-pos' : 'pnl-neg') : ''}">${unrealPct !== null ? fmtPct(unrealPct) : '—'}</td>
+      <td>${status}</td>
     `;
-    tbody.appendChild(tr);
+    openTbody.appendChild(tr);
   });
-  document.getElementById('rowCount').textContent = `${total} rows`;
-}
+  openTbody.querySelectorAll('.cur-input').forEach(inp => {
+    inp.addEventListener('change', (e) => {
+      const sym = e.target.dataset.symbol;
+      const val = parseFloat(e.target.value);
+      if(!isNaN(val)) currentPrices[sym] = val; else delete currentPrices[sym];
+      localStorage.setItem(PRICE_KEY, JSON.stringify(currentPrices));
+      render();
+    });
+  });
 
-function fmtMoney(n){
-  const sign = n < 0 ? '-' : '';
-  return sign + '$' + Math.abs(n).toFixed(2);
+  // Closed trades table
+  const closedTbody = document.getElementById('closedTbody');
+  closedTbody.innerHTML = '';
+  closed.forEach((c, i) => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${i+1}</td>
+      <td><b>${c.symbol}</b></td>
+      <td>${c.qty}</td>
+      <td>${fmtINR(c.buyPrice)}</td>
+      <td>${fmtINR(c.sellPrice)}</td>
+      <td class="${c.gainPct >= 0 ? 'pnl-pos' : 'pnl-neg'}">${fmtPct(c.gainPct)}</td>
+      <td><span class="pill ${c.isHit ? 'win' : 'loss'}">${c.isHit ? 'Hit' : 'Non-Hit'}</span></td>
+      <td>#${c.buyTradeNum}</td>
+      <td>#${c.sellTradeNum}</td>
+    `;
+    closedTbody.appendChild(tr);
+  });
+  document.getElementById('closedCount').textContent = `${totalClosed} segments`;
+
+  // Transaction log
+  const txTbody = document.getElementById('txTbody');
+  txTbody.innerHTML = '';
+  txLog.forEach(r => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>#${r.tradeNum}</td>
+      <td>${r.date || '—'}</td>
+      <td><b>${r.symbol}</b></td>
+      <td><span class="pill ${r.type}">${r.type}</span></td>
+      <td>${fmtINR(r.price)}</td>
+      <td>${r.qty}</td>
+    `;
+    txTbody.appendChild(tr);
+  });
+  document.getElementById('rowCount').textContent = `${txLog.length} rows`;
 }
 
 function loadFile(file){
-  Papa.parse(file, {
-    header: true,
-    skipEmptyLines: true,
-    complete: (res) => {
-      trades = res.data.map(normalizeRow).filter(t => !isNaN(t.pnl));
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(trades));
-      fileInfo.textContent = file.name + ' · loaded ' + trades.length + ' trades';
+  const ext = file.name.split('.').pop().toLowerCase();
+  if(ext === 'xlsx' || ext === 'xls'){
+    parseXlsx(file, (rows, err) => {
+      if(err){ alert('Could not read this file: ' + err); return; }
+      txRows = rows.map(normalizeRow).filter(r => r.symbol && (r.type === 'buy' || r.type === 'sell'));
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(txRows));
+      fileInfo.textContent = file.name + ' · loaded ' + txRows.length + ' transactions';
       render();
-    },
-    error: (err) => {
-      alert('Could not parse CSV: ' + err.message);
-    }
-  });
+    });
+  } else {
+    Papa.parse(file, {
+      header: true,
+      skipEmptyLines: true,
+      complete: (res) => {
+        txRows = res.data.map(normalizeRow).filter(r => r.symbol && (r.type === 'buy' || r.type === 'sell'));
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(txRows));
+        fileInfo.textContent = file.name + ' · loaded ' + txRows.length + ' transactions';
+        render();
+      },
+      error: (err) => { alert('Could not parse CSV: ' + err.message); }
+    });
+  }
 }
 
-fileInput.addEventListener('change', (e) => {
-  if(e.target.files[0]) loadFile(e.target.files[0]);
-});
-
-['dragover','dragenter'].forEach(evt => {
-  dropzone.addEventListener(evt, (e) => { e.preventDefault(); dropzone.classList.add('drag'); });
-});
-['dragleave','drop'].forEach(evt => {
-  dropzone.addEventListener(evt, (e) => { e.preventDefault(); dropzone.classList.remove('drag'); });
-});
-dropzone.addEventListener('drop', (e) => {
-  const file = e.dataTransfer.files[0];
-  if(file) loadFile(file);
-});
+fileInput.addEventListener('change', (e) => { if(e.target.files[0]) loadFile(e.target.files[0]); });
+['dragover','dragenter'].forEach(evt => dropzone.addEventListener(evt, (e) => { e.preventDefault(); dropzone.classList.add('drag'); }));
+['dragleave','drop'].forEach(evt => dropzone.addEventListener(evt, (e) => { e.preventDefault(); dropzone.classList.remove('drag'); }));
+dropzone.addEventListener('drop', (e) => { const file = e.dataTransfer.files[0]; if(file) loadFile(file); });
 
 document.getElementById('clearBtn').addEventListener('click', () => {
-  trades = [];
+  txRows = []; currentPrices = {};
   localStorage.removeItem(STORAGE_KEY);
+  localStorage.removeItem(PRICE_KEY);
   fileInput.value = '';
   render();
 });
 
+thresholdInput.addEventListener('change', () => {
+  localStorage.setItem(THRESH_KEY, thresholdInput.value);
+  render();
+});
+
 document.getElementById('sampleBtn').addEventListener('click', () => {
-  const csv = "date,symbol,side,entry,exit,qty,pnl\n2026-01-05,AAPL,long,190.20,194.10,10,39.00\n2026-01-06,TSLA,short,250.00,255.40,5,-27.00\n2026-01-08,NVDA,long,118.50,121.90,20,68.00\n2026-01-09,MSFT,long,410.00,406.50,8,-28.00\n2026-01-12,AMZN,long,178.20,181.00,15,42.00\n";
+  const csv = "date,symbol,type,price,qty\n2026-01-05,AAPL,buy,100,100\n2026-01-10,AAPL,sell,120,50\n2026-01-15,AAPL,buy,110,70\n2026-01-06,TSLA,buy,250,40\n2026-01-20,TSLA,sell,245,40\n2026-01-12,NVDA,buy,118.5,20\n2026-01-25,NVDA,sell,140,20\n";
   const blob = new Blob([csv], {type:'text/csv'});
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
@@ -438,14 +627,17 @@ document.getElementById('sampleBtn').addEventListener('click', () => {
   a.click();
 });
 
-// restore from localStorage on load
 (function init(){
-  const saved = localStorage.getItem(STORAGE_KEY);
-  if(saved){
+  const savedTx = localStorage.getItem(STORAGE_KEY);
+  const savedPrices = localStorage.getItem(PRICE_KEY);
+  const savedThreshold = localStorage.getItem(THRESH_KEY);
+  if(savedThreshold) thresholdInput.value = savedThreshold;
+  if(savedPrices){ try{ currentPrices = JSON.parse(savedPrices); }catch(e){ currentPrices = {}; } }
+  if(savedTx){
     try{
-      trades = JSON.parse(saved);
-      fileInfo.textContent = 'Restored ' + trades.length + ' trades from last session';
-    }catch(e){ trades = []; }
+      txRows = JSON.parse(savedTx);
+      fileInfo.textContent = 'Restored ' + txRows.length + ' transactions from last session';
+    }catch(e){ txRows = []; }
   }
   render();
 })();
