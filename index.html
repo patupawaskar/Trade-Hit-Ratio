@@ -8,7 +8,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.5.1/chart.umd.min.js"></script>
 <style>
   :root{
     --bg:#0A0D10; --panel:#12161B; --panel-2:#171C22; --line:#232A31;
@@ -352,6 +352,7 @@ function normalizeRow(row, idx){
 function parseXlsx(file, callback){
   const reader = new FileReader();
   reader.onload = (e) => {
+    let dataRows, parseErr;
     try{
       const data = new Uint8Array(e.target.result);
       const wb = XLSX.read(data, {type:'array', cellDates:true});
@@ -364,18 +365,22 @@ function parseXlsx(file, callback){
         const hasDateOrQty = cells.some(c => c.includes('trade date') || c === 'date' || c === 'quantity');
         if(hasSymbol && hasDateOrQty){ headerRowIdx = i; break; }
       }
-      if(headerRowIdx === -1){ callback([], 'Could not find a header row with Symbol/Trade Date/Quantity columns.'); return; }
-      const headers = rows[headerRowIdx].map(h => (h||'').toString().trim());
-      const dataRows = [];
-      for(let i=headerRowIdx+1;i<rows.length;i++){
-        const r = rows[i];
-        if(!r || r.every(c => c === '' || c === null || c === undefined)) continue;
-        const obj = {};
-        headers.forEach((h,idx) => { if(h) obj[h] = r[idx]; });
-        dataRows.push(obj);
+      if(headerRowIdx === -1){ parseErr = 'Could not find a header row with Symbol/Trade Date/Quantity columns.'; }
+      else {
+        const headers = rows[headerRowIdx].map(h => (h||'').toString().trim());
+        dataRows = [];
+        for(let i=headerRowIdx+1;i<rows.length;i++){
+          const r = rows[i];
+          if(!r || r.every(c => c === '' || c === null || c === undefined)) continue;
+          const obj = {};
+          headers.forEach((h,idx) => { if(h) obj[h] = r[idx]; });
+          dataRows.push(obj);
+        }
       }
-      callback(dataRows, null);
-    } catch(err){ callback([], err.message); }
+    } catch(err){ parseErr = err.message; }
+    // callback runs OUTSIDE the try/catch: an error in the caller's own code
+    // (e.g. a rendering bug) must never be misreported as a "file read" failure.
+    if(parseErr){ callback([], parseErr); } else { callback(dataRows, null); }
   };
   reader.readAsArrayBuffer(file);
 }
@@ -546,13 +551,17 @@ function renderAll(){
   emptyState.style.display = 'none';
   app.style.display = 'block';
 
-  const state = computeState();
-  document.getElementById('warnings').innerHTML = state.warnings.map(w => `<div class="warn-box">⚠ ${w}</div>`).join('');
-
-  renderOverview(state);
-  renderStockwise(state);
-  renderTimebased(state);
-  renderStats(state);
+  try{
+    const state = computeState();
+    document.getElementById('warnings').innerHTML = state.warnings.map(w => `<div class="warn-box">⚠ ${w}</div>`).join('');
+    renderOverview(state);
+    renderStockwise(state);
+    renderTimebased(state);
+    renderStats(state);
+  } catch(err){
+    console.error('Render error:', err);
+    document.getElementById('warnings').innerHTML = `<div class="warn-box">⚠ Something went wrong while rendering: ${err.message}. Your data loaded fine — this is a display bug. Check the browser console for details.</div>`;
+  }
 }
 
 function renderOverview(state){
