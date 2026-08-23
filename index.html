@@ -471,24 +471,34 @@ function computeState(){
 // ---------- Live price fetching ----------
 async function fetchOneSymbolPrice(symbol){
   const suffixes = ['.NS', '.BO'];
+  const attempts = [];
   for(const suf of suffixes){
     const yUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol + suf)}`;
     const proxies = [
-      `https://api.allorigins.win/raw?url=${encodeURIComponent(yUrl)}`,
-      `https://corsproxy.io/?${encodeURIComponent(yUrl)}`
+      { name: 'allorigins', url: `https://api.allorigins.win/raw?url=${encodeURIComponent(yUrl)}` },
+      { name: 'corsproxy.io', url: `https://corsproxy.io/?${encodeURIComponent(yUrl)}` }
     ];
     for(const p of proxies){
       try{
-        const res = await fetch(p, {cache:'no-store'});
-        if(!res.ok) continue;
+        const res = await fetch(p.url, {cache:'no-store'});
+        if(!res.ok){
+          attempts.push(`${symbol}${suf} via ${p.name}: HTTP ${res.status}`);
+          continue;
+        }
         const json = await res.json();
         const price = json && json.chart && json.chart.result && json.chart.result[0] && json.chart.result[0].meta
           ? json.chart.result[0].meta.regularMarketPrice : undefined;
-        if(typeof price === 'number') return price;
-      } catch(e){ /* try next */ }
+        if(typeof price === 'number'){
+          return { price, error: null };
+        }
+        attempts.push(`${symbol}${suf} via ${p.name}: no price in response (${JSON.stringify(json).slice(0,120)})`);
+      } catch(e){
+        attempts.push(`${symbol}${suf} via ${p.name}: ${e.message}`);
+      }
     }
   }
-  return null;
+  console.warn('Price fetch failed for', symbol, attempts);
+  return { price: null, error: attempts.join(' | ') };
 }
 
 async function fetchAllPrices(){
@@ -498,19 +508,28 @@ async function fetchAllPrices(){
   const btn = document.getElementById('refreshPricesBtn');
   const status = document.getElementById('priceStatus');
   btn.disabled = true;
-  let done = 0;
+  let done = 0, failCount = 0, lastError = '';
   for(const sym of openSymbols){
     if(prices[sym] && prices[sym].source === 'manual'){ done++; continue; }
     status.textContent = `Fetching prices… (${done+1}/${openSymbols.length})`;
-    const price = await fetchOneSymbolPrice(sym);
-    if(price !== null){
-      prices[sym] = { price, source: 'auto', ts: Date.now() };
+    const result = await fetchOneSymbolPrice(sym);
+    if(result.price !== null){
+      prices[sym] = { price: result.price, source: 'auto', ts: Date.now() };
+    } else {
+      failCount++;
+      lastError = result.error;
     }
     done++;
     await new Promise(r => setTimeout(r, 120));
   }
   localStorage.setItem(PRICE_KEY, JSON.stringify(prices));
-  status.textContent = `Prices updated ${new Date().toLocaleTimeString('en-IN')}`;
+  if(failCount === openSymbols.length){
+    status.innerHTML = `<span style="color:var(--loss)">All ${failCount} price fetches failed. Open browser console (F12) for details. Last error: ${lastError.slice(0,150)}</span>`;
+  } else if(failCount > 0){
+    status.textContent = `Updated ${openSymbols.length - failCount}/${openSymbols.length} · ${failCount} failed (see console) · ${new Date().toLocaleTimeString('en-IN')}`;
+  } else {
+    status.textContent = `All ${openSymbols.length} prices updated · ${new Date().toLocaleTimeString('en-IN')}`;
+  }
   btn.disabled = false;
   renderAll();
 }
