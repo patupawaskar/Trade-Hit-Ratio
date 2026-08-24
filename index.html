@@ -346,7 +346,28 @@ function normalizeRow(row, idx){
   const type = (get(['type','side','action','trade type']) || '').toString().trim().toLowerCase();
   const price = parseFloat(get(['price','entry','exit','trade price']));
   const qty = parseFloat(get(['qty','quantity','size']));
-  return { idx, date, symbol, type, price, qty };
+  const orderId = (get(['order id','orderid']) || '').toString().trim() || null;
+  return { idx, date, symbol, type, price, qty, orderId };
+}
+
+// Broker exports often log one order as multiple fill rows (e.g. a 2-share buy filled
+// as two separate 1-share executions). Those should count as ONE tranche/closure, not
+// several. Group by Order ID when the broker provides one (most reliable); otherwise
+// fall back to grouping same-day same-symbol same-type rows together.
+function consolidateRows(rows){
+  const groups = {};
+  rows.forEach(r => {
+    const key = r.orderId ? `oid:${r.symbol}|${r.type}|${r.orderId}` : `dt:${r.symbol}|${r.type}|${r.date}`;
+    if(!groups[key]) groups[key] = { symbol: r.symbol, type: r.type, date: r.date, qty: 0, valueSum: 0, idx: r.idx };
+    groups[key].qty += r.qty;
+    groups[key].valueSum += r.qty * r.price;
+    groups[key].idx = Math.min(groups[key].idx, r.idx);
+    if(r.date < groups[key].date) groups[key].date = r.date; // keep earliest date in group
+  });
+  return Object.values(groups).map(g => ({
+    idx: g.idx, symbol: g.symbol, type: g.type, date: g.date,
+    price: g.valueSum / g.qty, qty: g.qty
+  }));
 }
 
 function parseXlsx(file, callback){
@@ -414,7 +435,8 @@ function loadFile(file){
 // ---------- Core FIFO / tranche engine ----------
 function computeState(){
   const thresholdPct = parseFloat(thresholdInput.value) || 0;
-  const sorted = [...txRows].sort((a,b) => {
+  const consolidated = consolidateRows(txRows);
+  const sorted = [...consolidated].sort((a,b) => {
     const da = new Date(a.date).getTime() || 0;
     const db = new Date(b.date).getTime() || 0;
     if(da !== db) return da - db;
