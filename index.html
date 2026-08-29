@@ -65,7 +65,10 @@
   .page.active{display:block;}
 
   .info-note{font-size:11px; color:var(--text-dim); background:var(--panel-2); border:1px solid var(--line); border-radius:8px; padding:10px 14px; margin-bottom:16px;}
-  .warn-box{background:#2A2210; border:1px solid #5C4A16; color:var(--amber); border-radius:8px; padding:10px 16px; font-size:11.5px; margin-bottom:12px;}
+  .warn-box{background:#2A2210; border:1px solid #5C4A16; color:var(--amber); border-radius:8px; padding:10px 16px; font-size:11.5px; margin-bottom:12px; display:flex; justify-content:space-between; align-items:center; gap:10px;}
+  .warn-dismiss{background:none; border:none; color:var(--amber); cursor:pointer; font-size:14px; line-height:1; padding:0 4px; flex-shrink:0;}
+  .warn-dismiss:hover{color:var(--text);}
+  .dismiss-all-link{font-size:11px; color:var(--text-dim); text-decoration:underline; cursor:pointer; margin-bottom:10px; display:inline-block;}
 
   .hero{display:grid; grid-template-columns:200px 1fr; gap:24px; background:var(--panel); border:1px solid var(--line); border-radius:var(--radius); padding:26px; margin-bottom:20px;}
   @media (max-width:680px){ .hero{grid-template-columns:1fr; justify-items:center; text-align:center;} }
@@ -206,13 +209,13 @@
         </div>
       </div>
 
-      <div class="info-note">"Days to hit" is calculated from actual daily closing prices (1 year of history, fetched alongside live prices) — it finds the first day the price closed at or above your hit threshold. "No history yet" means click Refresh Prices; "Not yet" means it hasn't crossed the threshold within the fetched window.</div>
+      <div class="info-note">Open positions are grouped by symbol — average buy price blends all open tranches. See the Stock-wise page for per-tranche detail, including historical "days to hit" for each individual purchase.</div>
 
       <div class="panel">
         <div class="panel-head"><b>Open Positions</b><span id="openCount">0 symbols</span></div>
         <div class="panel-body" style="overflow-x:auto;">
         <table>
-          <thead><tr><th>Symbol</th><th>Tranches</th><th>First Entry</th><th>Total Qty</th><th>Avg Buy Price</th><th>Invested</th><th>Current Price</th><th>Current Value</th><th>Unreal. %</th><th>Unreal. P&amp;L</th><th>Days Since Entry</th><th>Days to Hit</th><th>Status</th></tr></thead>
+          <thead><tr><th>Symbol</th><th>Tranches</th><th>First Entry</th><th>Total Qty</th><th>Avg Buy Price</th><th>Invested</th><th>Current Price</th><th>Current Value</th><th>Unreal. %</th><th>Unreal. P&amp;L</th><th>Days Since Entry</th><th>Status</th></tr></thead>
           <tbody id="openTbody"></tbody>
         </table>
         </div>
@@ -305,12 +308,14 @@ const PRICE_KEY = 'hitratio_prices_v3';
 const THRESH_KEY = 'hitratio_threshold_v3';
 const HISTORY_KEY = 'hitratio_history_v3';
 const HIDE_KEY = 'hitratio_hideincomplete_v3';
+const DISMISS_KEY = 'hitratio_dismissedwarnings_v3';
 let txRows = [];
 let prices = {}; // symbol -> {price, source: 'auto'|'manual', ts}
 let priceHistory = {}; // symbol -> [{date:'YYYY-MM-DD', close:number}, ...] ascending
 let periodChartInstance = null;
 let currentGran = 'month';
 let hideIncomplete = false;
+let dismissedWarnings = new Set();
 
 const fileInput = document.getElementById('fileInput');
 const dropzone = document.getElementById('dropzone');
@@ -350,6 +355,12 @@ function dateDiffDays(a,b){
   const da = new Date(a), db = new Date(b);
   if(isNaN(da) || isNaN(db)) return null;
   return Math.round((db - da) / 86400000);
+}
+function dateAddDays(dateStr, days){
+  const d = new Date(dateStr);
+  if(isNaN(d)) return dateStr;
+  d.setDate(d.getDate() + days);
+  return d.toISOString().split('T')[0];
 }
 
 // ---------- CSV / XLSX loading ----------
@@ -543,7 +554,7 @@ async function fetchOneSymbolData(symbol){
   const suffixes = ['.NS', '.BO'];
   const attempts = [];
   for(const suf of suffixes){
-    const yUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol + suf)}?range=1y&interval=1d`;
+    const yUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol + suf)}?range=2y&interval=1d`;
     const proxies = [
       { name: 'allorigins', url: `https://api.allorigins.win/raw?url=${encodeURIComponent(yUrl)}` },
       { name: 'corsproxy.io', url: `https://corsproxy.io/?${encodeURIComponent(yUrl)}` }
@@ -591,15 +602,17 @@ function computeDaysToHit(symbol, buyDate, buyPrice, thresholdPct){
 
 async function fetchAllPrices(){
   const state = computeState();
-  const openSymbols = [...new Set(state.allTranches.filter(t => t.qtyRemaining > 1e-9).map(t => t.symbol))];
-  if(openSymbols.length === 0) return;
+  // Fetch for every symbol that ever appears, not just currently-open ones — closed
+  // tranches need history too, to answer "when did this actually cross the threshold".
+  const allSymbols = [...new Set(state.allTranches.map(t => t.symbol))];
+  if(allSymbols.length === 0) return;
   const btn = document.getElementById('refreshPricesBtn');
   const status = document.getElementById('priceStatus');
   btn.disabled = true;
   let done = 0, failCount = 0, lastError = '';
-  for(const sym of openSymbols){
+  for(const sym of allSymbols){
     if(prices[sym] && prices[sym].source === 'manual'){ done++; continue; }
-    status.textContent = `Fetching prices & history… (${done+1}/${openSymbols.length})`;
+    status.textContent = `Fetching prices & history… (${done+1}/${allSymbols.length})`;
     const result = await fetchOneSymbolData(sym);
     if(result.price !== null){
       prices[sym] = { price: result.price, source: 'auto', ts: Date.now() };
@@ -613,18 +626,50 @@ async function fetchAllPrices(){
   }
   localStorage.setItem(PRICE_KEY, JSON.stringify(prices));
   localStorage.setItem(HISTORY_KEY, JSON.stringify(priceHistory));
-  if(failCount === openSymbols.length){
+  if(failCount === allSymbols.length){
     status.innerHTML = `<span style="color:var(--loss)">All ${failCount} price fetches failed. Open browser console (F12) for details. Last error: ${lastError.slice(0,150)}</span>`;
   } else if(failCount > 0){
-    status.textContent = `Updated ${openSymbols.length - failCount}/${openSymbols.length} · ${failCount} failed (see console) · ${new Date().toLocaleTimeString('en-IN')}`;
+    status.textContent = `Updated ${allSymbols.length - failCount}/${allSymbols.length} · ${failCount} failed (see console) · ${new Date().toLocaleTimeString('en-IN')}`;
   } else {
-    status.textContent = `All ${openSymbols.length} prices + 1y history updated · ${new Date().toLocaleTimeString('en-IN')}`;
+    status.textContent = `All ${allSymbols.length} symbols' prices + history updated · ${new Date().toLocaleTimeString('en-IN')}`;
   }
   btn.disabled = false;
   renderAll();
 }
 
 // ---------- Rendering ----------
+function warningKey(w){
+  // Stable id: hash-free, just use the message text itself (deterministic given the same data).
+  return w;
+}
+function renderWarnings(warnings){
+  const visible = warnings.filter(w => !dismissedWarnings.has(warningKey(w)));
+  const container = document.getElementById('warnings');
+  if(visible.length === 0){ container.innerHTML = ''; return; }
+  const dismissAllHtml = visible.length > 1 ? `<span class="dismiss-all-link" id="dismissAllWarnings">Dismiss all ${visible.length}</span>` : '';
+  container.innerHTML = dismissAllHtml + visible.map(w => `
+    <div class="warn-box">
+      <span>⚠ ${w}</span>
+      <button class="warn-dismiss" data-key="${encodeURIComponent(warningKey(w))}" title="Dismiss">✕</button>
+    </div>
+  `).join('');
+  container.querySelectorAll('.warn-dismiss').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      dismissedWarnings.add(decodeURIComponent(e.target.dataset.key));
+      localStorage.setItem(DISMISS_KEY, JSON.stringify([...dismissedWarnings]));
+      renderWarnings(warnings);
+    });
+  });
+  const dismissAllEl = document.getElementById('dismissAllWarnings');
+  if(dismissAllEl){
+    dismissAllEl.addEventListener('click', () => {
+      visible.forEach(w => dismissedWarnings.add(warningKey(w)));
+      localStorage.setItem(DISMISS_KEY, JSON.stringify([...dismissedWarnings]));
+      renderWarnings(warnings);
+    });
+  }
+}
+
 function renderAll(){
   if(!txRows.length){
     emptyState.style.display = 'block';
@@ -638,7 +683,7 @@ function renderAll(){
 
   try{
     const state = computeState();
-    document.getElementById('warnings').innerHTML = state.warnings.map(w => `<div class="warn-box">⚠ ${w}</div>`).join('');
+    renderWarnings(state.warnings);
     renderOverview(state);
     renderStockwise(state);
     renderTimebased(state);
@@ -706,7 +751,7 @@ function renderOverview(rawState){
   openTbody.innerHTML = '';
   document.getElementById('openCount').textContent = `${openSymbolRows.length} symbols`;
   if(openSymbolRows.length === 0){
-    openTbody.innerHTML = '<tr><td colspan="13" style="color:var(--text-dim);">No open positions</td></tr>';
+    openTbody.innerHTML = '<tr><td colspan="12" style="color:var(--text-dim);">No open positions</td></tr>';
   }
   openSymbolRows.sort((a,b) => a.symbol.localeCompare(b.symbol)).forEach(agg => {
     const priceObj = prices[agg.symbol];
@@ -716,12 +761,6 @@ function renderOverview(rawState){
     const unrealPct = cur !== undefined ? ((cur - agg.avgBuyPrice)/agg.avgBuyPrice)*100 : null;
     const unrealPnl = curVal !== null ? curVal - invested : null;
     const daysOpen = dateDiffDays(agg.earliestDate, todayISO());
-
-    const hitCheck = computeDaysToHit(agg.symbol, agg.earliestDate, agg.avgBuyPrice, thresholdPct);
-    let daysToHitText = '—';
-    if(hitCheck.reason === 'no-history') daysToHitText = 'No history yet';
-    else if(hitCheck.reason === 'not-yet-in-history') daysToHitText = 'Not yet';
-    else if(hitCheck.days !== null) daysToHitText = `${hitCheck.days}d`;
 
     let status;
     if(unrealPct === null) status = '<span class="pill open">No price</span>';
@@ -746,7 +785,6 @@ function renderOverview(rawState){
       <td class="${unrealPct !== null ? (unrealPct>=0?'pnl-pos':'pnl-neg') : ''}">${unrealPct !== null ? fmtPct(unrealPct) : '—'}</td>
       <td class="${unrealPnl !== null ? (unrealPnl>=0?'pnl-pos':'pnl-neg') : ''}">${unrealPnl !== null ? fmtINR(unrealPnl) : '—'}</td>
       <td>${daysOpen}</td>
-      <td>${daysToHitText}</td>
       <td>${status}</td>
     `;
     openTbody.appendChild(tr);
@@ -805,6 +843,19 @@ function renderStockwise(rawState){
       const lifespan = finalExit ? dateDiffDays(lot.buyDate, finalExit) : dateDiffDays(lot.buyDate, todayISO());
       title.textContent = `Tranche #${lot.trancheNum} — bought ${lot.qtyOriginal} @ ${fmtINR(lot.buyPrice)} on ${lot.buyDate} · ${fullyClosed ? `closed after ${lifespan}d (exit ${finalExit})` : `still open, ${lifespan}d elapsed`}`;
       body.appendChild(title);
+
+      const hitCheck = computeDaysToHit(sym, lot.buyDate, lot.buyPrice, state.thresholdPct);
+      const histNote = document.createElement('div');
+      histNote.style.cssText = 'font-size:11px; color:var(--text-dim); margin-bottom:8px;';
+      if(hitCheck.reason === 'no-history'){
+        histNote.innerHTML = `📈 Historical target check: no price history fetched yet for ${sym} — click "↻ Refresh Prices" above.`;
+      } else if(hitCheck.reason === 'not-yet-in-history'){
+        histNote.innerHTML = `📈 Historical target check: hasn't closed at +${state.thresholdPct}% or more from ₹${lot.buyPrice.toFixed(2)} within the fetched price history.`;
+      } else if(hitCheck.days !== null){
+        const hitDate = dateAddDays(lot.buyDate, hitCheck.days);
+        histNote.innerHTML = `📈 <b style="color:var(--win)">Historically hit +${state.thresholdPct}% target in ${hitCheck.days} day${hitCheck.days===1?'':'s'}</b> (around ${hitDate}, based on daily closes) — regardless of when you actually sold.`;
+      }
+      body.appendChild(histNote);
 
       if(lot.closures.length){
         const tbl = document.createElement('table');
@@ -1005,10 +1056,11 @@ fileInput.addEventListener('change', (e) => { if(e.target.files[0]) loadFile(e.t
 dropzone.addEventListener('drop', (e) => { const file = e.dataTransfer.files[0]; if(file) loadFile(file); });
 
 document.getElementById('clearBtn').addEventListener('click', () => {
-  txRows = []; prices = {}; priceHistory = {};
+  txRows = []; prices = {}; priceHistory = {}; dismissedWarnings = new Set();
   localStorage.removeItem(STORAGE_KEY);
   localStorage.removeItem(PRICE_KEY);
   localStorage.removeItem(HISTORY_KEY);
+  localStorage.removeItem(DISMISS_KEY);
   fileInput.value = '';
   renderAll();
 });
@@ -1047,6 +1099,8 @@ document.getElementById('periodTabs').addEventListener('click', (e) => {
   const savedHistory = localStorage.getItem(HISTORY_KEY);
   const savedThreshold = localStorage.getItem(THRESH_KEY);
   const savedHide = localStorage.getItem(HIDE_KEY);
+  const savedDismissed = localStorage.getItem(DISMISS_KEY);
+  if(savedDismissed){ try{ dismissedWarnings = new Set(JSON.parse(savedDismissed)); }catch(e){ dismissedWarnings = new Set(); } }
   if(savedThreshold) thresholdInput.value = savedThreshold;
   if(savedHide === '1'){ hideIncomplete = true; document.getElementById('hideIncompleteToggle').checked = true; }
   if(savedPrices){ try{ prices = JSON.parse(savedPrices); }catch(e){ prices = {}; } }
