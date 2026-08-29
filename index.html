@@ -154,6 +154,10 @@
     </div>
     <button class="btn primary" id="refreshPricesBtn">↻ Refresh Prices</button>
     <span class="price-status" id="priceStatus"></span>
+    <label class="thresh-inline" style="cursor:pointer;">
+      <input type="checkbox" id="hideIncompleteToggle" style="width:auto;">
+      <span>Hide symbols with missing buy history</span>
+    </label>
     <button class="btn" id="sampleBtn">Sample CSV</button>
     <button class="btn" id="clearBtn">Clear</button>
   </div>
@@ -192,8 +196,8 @@
           <div class="stat-grid">
             <div class="stat win"><div class="v" id="statHits">0</div><div class="k">Hits</div></div>
             <div class="stat loss"><div class="v" id="statMisses">0</div><div class="k">Non-Hits</div></div>
-            <div class="stat amber"><div class="v" id="statRR">0.00</div><div class="k">R : R</div></div>
-            <div class="stat"><div class="v" id="statClosed">0</div><div class="k">Closed Segments</div></div>
+            <div class="stat amber"><div class="v" id="statRR">0.00</div><div class="k">R : R (hit threshold)</div></div>
+            <div class="stat amber"><div class="v" id="statExpectancy">0%</div><div class="k">Expected Return / Trade</div></div>
             <div class="stat win"><div class="v" id="statRealized">₹0</div><div class="k">Realized P&amp;L</div></div>
             <div class="stat" id="unrealCard"><div class="v" id="statUnrealized">₹0</div><div class="k">Unrealized P&amp;L</div></div>
             <div class="stat"><div class="v" id="statInvestedOpen">₹0</div><div class="k">Currently Invested</div></div>
@@ -202,13 +206,13 @@
         </div>
       </div>
 
-      <div class="info-note">"Days to hit" for open positions is a best-effort estimate (days since purchase) — without historical daily prices we can't pinpoint the exact day a position crossed the hit threshold, only its current status.</div>
+      <div class="info-note">"Days to hit" is calculated from actual daily closing prices (1 year of history, fetched alongside live prices) — it finds the first day the price closed at or above your hit threshold. "No history yet" means click Refresh Prices; "Not yet" means it hasn't crossed the threshold within the fetched window.</div>
 
       <div class="panel">
-        <div class="panel-head"><b>Open Positions</b><span id="openCount">0 tranches</span></div>
+        <div class="panel-head"><b>Open Positions</b><span id="openCount">0 symbols</span></div>
         <div class="panel-body" style="overflow-x:auto;">
         <table>
-          <thead><tr><th>Symbol</th><th>Tranche</th><th>Buy Date</th><th>Qty</th><th>Buy Price</th><th>Invested</th><th>Current Price</th><th>Current Value</th><th>Unreal. %</th><th>Unreal. P&amp;L</th><th>Days Open</th><th>Status</th></tr></thead>
+          <thead><tr><th>Symbol</th><th>Tranches</th><th>First Entry</th><th>Total Qty</th><th>Avg Buy Price</th><th>Invested</th><th>Current Price</th><th>Current Value</th><th>Unreal. %</th><th>Unreal. P&amp;L</th><th>Days Since Entry</th><th>Days to Hit</th><th>Status</th></tr></thead>
           <tbody id="openTbody"></tbody>
         </table>
         </div>
@@ -253,6 +257,10 @@
         <div class="stat"><div class="v" id="s4CurrentInvested">₹0</div><div class="k">Currently Invested</div></div>
         <div class="stat"><div class="v" id="s4TotalTrades">0</div><div class="k">Total Buy Tranches</div></div>
         <div class="stat"><div class="v" id="s4TotalClosed">0</div><div class="k">Total Closed Segments</div></div>
+        <div class="stat amber"><div class="v" id="s4Expectancy">0%</div><div class="k">Expected Return / Trade</div></div>
+        <div class="stat"><div class="v" id="s4WinRate">0%</div><div class="k">Win Rate (any profit)</div></div>
+        <div class="stat win"><div class="v" id="s4AvgWin">0%</div><div class="k">Avg Win %</div></div>
+        <div class="stat loss"><div class="v" id="s4AvgLoss">0%</div><div class="k">Avg Loss %</div></div>
       </div>
 
       <div class="panel">
@@ -295,10 +303,14 @@
 const STORAGE_KEY = 'hitratio_tx_v3';
 const PRICE_KEY = 'hitratio_prices_v3';
 const THRESH_KEY = 'hitratio_threshold_v3';
+const HISTORY_KEY = 'hitratio_history_v3';
+const HIDE_KEY = 'hitratio_hideincomplete_v3';
 let txRows = [];
 let prices = {}; // symbol -> {price, source: 'auto'|'manual', ts}
+let priceHistory = {}; // symbol -> [{date:'YYYY-MM-DD', close:number}, ...] ascending
 let periodChartInstance = null;
 let currentGran = 'month';
+let hideIncomplete = false;
 
 const fileInput = document.getElementById('fileInput');
 const dropzone = document.getElementById('dropzone');
@@ -316,6 +328,22 @@ function fmtPct(n){
   if(n === null || n === undefined || isNaN(n)) return '—';
   const sign = n >= 0 ? '+' : '';
   return sign + n.toFixed(2) + '%';
+}
+// Standard expectancy: (win rate * avg win%) - (loss rate * avg loss% magnitude)
+// Uses breakeven (>0% / <0%) buckets, NOT the hit-threshold buckets, since this
+// is meant to answer "is this strategy profitable on average per trade" independent
+// of wherever the hit-ratio threshold happens to be set.
+function computeExpectancy(closures){
+  const wins = closures.filter(c => c.gainPct > 0);
+  const losses = closures.filter(c => c.gainPct < 0);
+  const total = closures.length;
+  if(total === 0) return { expectancy: null, winRate: null, avgWinPct: null, avgLossPct: null };
+  const winRate = wins.length / total;
+  const lossRate = losses.length / total;
+  const avgWinPct = wins.length ? wins.reduce((s,c)=>s+c.gainPct,0)/wins.length : 0;
+  const avgLossPct = losses.length ? Math.abs(losses.reduce((s,c)=>s+c.gainPct,0)/losses.length) : 0;
+  const expectancy = (winRate * avgWinPct) - (lossRate * avgLossPct);
+  return { expectancy, winRate: winRate*100, avgWinPct, avgLossPct };
 }
 function todayISO(){ return new Date().toISOString().split('T')[0]; }
 function dateDiffDays(a,b){
@@ -447,6 +475,7 @@ function computeState(){
   const trancheCounters = {};
   const allClosures = [];
   const warnings = [];
+  const incompleteSymbols = new Set();
   let tradeNum = 0;
 
   sorted.forEach(r => {
@@ -485,6 +514,7 @@ function computeState(){
       }
       if(remaining > 1e-9){
         warnings.push(`Trade #${tradeNum}: sold ${remaining.toFixed(2)} more ${r.symbol} than held (short selling not tracked) — excess ignored.`);
+        incompleteSymbols.add(r.symbol);
       }
     }
   });
@@ -492,15 +522,28 @@ function computeState(){
   const allTranches = [];
   Object.keys(lotsBySymbol).forEach(sym => lotsBySymbol[sym].forEach(lot => allTranches.push(lot)));
 
-  return { thresholdPct, lotsBySymbol, allTranches, allClosures, warnings };
+  return { thresholdPct, lotsBySymbol, allTranches, allClosures, warnings, incompleteSymbols };
 }
 
-// ---------- Live price fetching ----------
-async function fetchOneSymbolPrice(symbol){
+function applyHideFilter(state){
+  if(!hideIncomplete || state.incompleteSymbols.size === 0) return state;
+  const keep = sym => !state.incompleteSymbols.has(sym);
+  const lotsBySymbol = {};
+  Object.keys(state.lotsBySymbol).forEach(sym => { if(keep(sym)) lotsBySymbol[sym] = state.lotsBySymbol[sym]; });
+  return {
+    ...state,
+    lotsBySymbol,
+    allTranches: state.allTranches.filter(t => keep(t.symbol)),
+    allClosures: state.allClosures.filter(c => keep(c.symbol))
+  };
+}
+
+// ---------- Live price + historical price fetching ----------
+async function fetchOneSymbolData(symbol){
   const suffixes = ['.NS', '.BO'];
   const attempts = [];
   for(const suf of suffixes){
-    const yUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol + suf)}`;
+    const yUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol + suf)}?range=1y&interval=1d`;
     const proxies = [
       { name: 'allorigins', url: `https://api.allorigins.win/raw?url=${encodeURIComponent(yUrl)}` },
       { name: 'corsproxy.io', url: `https://corsproxy.io/?${encodeURIComponent(yUrl)}` }
@@ -508,24 +551,42 @@ async function fetchOneSymbolPrice(symbol){
     for(const p of proxies){
       try{
         const res = await fetch(p.url, {cache:'no-store'});
-        if(!res.ok){
-          attempts.push(`${symbol}${suf} via ${p.name}: HTTP ${res.status}`);
-          continue;
-        }
+        if(!res.ok){ attempts.push(`${symbol}${suf} via ${p.name}: HTTP ${res.status}`); continue; }
         const json = await res.json();
-        const price = json && json.chart && json.chart.result && json.chart.result[0] && json.chart.result[0].meta
-          ? json.chart.result[0].meta.regularMarketPrice : undefined;
-        if(typeof price === 'number'){
-          return { price, error: null };
+        const result = json && json.chart && json.chart.result && json.chart.result[0];
+        if(!result || !result.meta){ attempts.push(`${symbol}${suf} via ${p.name}: no result`); continue; }
+        const price = result.meta.regularMarketPrice;
+        let history = [];
+        if(result.timestamp && result.indicators && result.indicators.quote && result.indicators.quote[0]){
+          const closes = result.indicators.quote[0].close || [];
+          history = result.timestamp.map((ts, i) => ({
+            date: new Date(ts * 1000).toISOString().split('T')[0],
+            close: closes[i]
+          })).filter(h => typeof h.close === 'number');
         }
-        attempts.push(`${symbol}${suf} via ${p.name}: no price in response (${JSON.stringify(json).slice(0,120)})`);
+        if(typeof price === 'number'){
+          return { price, history, error: null };
+        }
+        attempts.push(`${symbol}${suf} via ${p.name}: no price in response`);
       } catch(e){
         attempts.push(`${symbol}${suf} via ${p.name}: ${e.message}`);
       }
     }
   }
   console.warn('Price fetch failed for', symbol, attempts);
-  return { price: null, error: attempts.join(' | ') };
+  return { price: null, history: [], error: attempts.join(' | ') };
+}
+
+// Find how many days after buyDate the price first closed at/above the hit threshold.
+// Returns null if it hasn't happened yet within the fetched history window.
+function computeDaysToHit(symbol, buyDate, buyPrice, thresholdPct){
+  const hist = priceHistory[symbol];
+  if(!hist || !hist.length) return { days: null, reason: 'no-history' };
+  const targetPrice = buyPrice * (1 + thresholdPct / 100);
+  const afterBuy = hist.filter(h => h.date >= buyDate);
+  const firstHit = afterBuy.find(h => h.close >= targetPrice);
+  if(firstHit) return { days: dateDiffDays(buyDate, firstHit.date), reason: 'found' };
+  return { days: null, reason: 'not-yet-in-history' };
 }
 
 async function fetchAllPrices(){
@@ -538,10 +599,11 @@ async function fetchAllPrices(){
   let done = 0, failCount = 0, lastError = '';
   for(const sym of openSymbols){
     if(prices[sym] && prices[sym].source === 'manual'){ done++; continue; }
-    status.textContent = `Fetching prices… (${done+1}/${openSymbols.length})`;
-    const result = await fetchOneSymbolPrice(sym);
+    status.textContent = `Fetching prices & history… (${done+1}/${openSymbols.length})`;
+    const result = await fetchOneSymbolData(sym);
     if(result.price !== null){
       prices[sym] = { price: result.price, source: 'auto', ts: Date.now() };
+      if(result.history.length) priceHistory[sym] = result.history;
     } else {
       failCount++;
       lastError = result.error;
@@ -550,12 +612,13 @@ async function fetchAllPrices(){
     await new Promise(r => setTimeout(r, 120));
   }
   localStorage.setItem(PRICE_KEY, JSON.stringify(prices));
+  localStorage.setItem(HISTORY_KEY, JSON.stringify(priceHistory));
   if(failCount === openSymbols.length){
     status.innerHTML = `<span style="color:var(--loss)">All ${failCount} price fetches failed. Open browser console (F12) for details. Last error: ${lastError.slice(0,150)}</span>`;
   } else if(failCount > 0){
     status.textContent = `Updated ${openSymbols.length - failCount}/${openSymbols.length} · ${failCount} failed (see console) · ${new Date().toLocaleTimeString('en-IN')}`;
   } else {
-    status.textContent = `All ${openSymbols.length} prices updated · ${new Date().toLocaleTimeString('en-IN')}`;
+    status.textContent = `All ${openSymbols.length} prices + 1y history updated · ${new Date().toLocaleTimeString('en-IN')}`;
   }
   btn.disabled = false;
   renderAll();
@@ -586,8 +649,9 @@ function renderAll(){
   }
 }
 
-function renderOverview(state){
-  const { allClosures, allTranches, thresholdPct } = state;
+function renderOverview(rawState){
+  const state = applyHideFilter(rawState);
+  const { allClosures, allTranches, thresholdPct, incompleteSymbols } = state;
   const hits = allClosures.filter(c => c.isHit);
   const misses = allClosures.filter(c => !c.isHit);
   const totalClosed = allClosures.length;
@@ -596,6 +660,7 @@ function renderOverview(state){
   const avgLossAbs = misses.length ? Math.abs(misses.reduce((s,c)=>s+c.gainPct,0)/misses.length) : 0;
   const rr = avgLossAbs ? avgGain/avgLossAbs : 0;
   const realizedPnl = allClosures.reduce((s,c)=>s+c.pnl,0);
+  const { expectancy } = computeExpectancy(allClosures);
 
   const openTranches = allTranches.filter(t => t.qtyRemaining > 1e-9);
   let unrealizedPnl = 0, investedOpen = 0, currentValueOpen = 0, anyPriceMissing = false;
@@ -609,11 +674,11 @@ function renderOverview(state){
   });
 
   document.getElementById('hitPct').textContent = hitRatio.toFixed(1) + '%';
-  document.getElementById('heroSummary').textContent = `${totalClosed} closed segments · ${hits.length} hits / ${misses.length} non-hits · threshold ${thresholdPct}%`;
+  document.getElementById('heroSummary').textContent = `${totalClosed} closed segments · ${hits.length} hits / ${misses.length} non-hits · threshold ${thresholdPct}%` + (incompleteSymbols.size && hideIncomplete ? ` · ${incompleteSymbols.size} symbol(s) hidden` : '');
   document.getElementById('statHits').textContent = hits.length;
   document.getElementById('statMisses').textContent = misses.length;
   document.getElementById('statRR').textContent = rr.toFixed(2);
-  document.getElementById('statClosed').textContent = totalClosed;
+  document.getElementById('statExpectancy').textContent = expectancy !== null ? fmtPct(expectancy) : '—';
   document.getElementById('statRealized').textContent = fmtINR(realizedPnl);
   document.getElementById('statUnrealized').textContent = (anyPriceMissing ? '~' : '') + fmtINR(unrealizedPnl);
   document.getElementById('statInvestedOpen').textContent = fmtINR(investedOpen);
@@ -625,39 +690,63 @@ function renderOverview(state){
   ring.setAttribute('stroke-dasharray', `${filled} ${circumference}`);
   ring.style.stroke = hitRatio >= 50 ? 'var(--win)' : 'var(--loss)';
 
+  // ---- Aggregate open tranches into ONE row per symbol ----
+  const bySymbol = {};
+  openTranches.forEach(t => {
+    if(!bySymbol[t.symbol]) bySymbol[t.symbol] = { symbol: t.symbol, qty: 0, notional: 0, tranches: [], earliestDate: t.buyDate };
+    const agg = bySymbol[t.symbol];
+    agg.qty += t.qtyRemaining;
+    agg.notional += t.qtyRemaining * t.buyPrice;
+    agg.tranches.push(t.trancheNum);
+    if(t.buyDate < agg.earliestDate) agg.earliestDate = t.buyDate;
+  });
+  const openSymbolRows = Object.values(bySymbol).map(agg => ({ ...agg, avgBuyPrice: agg.notional / agg.qty }));
+
   const openTbody = document.getElementById('openTbody');
   openTbody.innerHTML = '';
-  document.getElementById('openCount').textContent = `${openTranches.length} tranches`;
-  if(openTranches.length === 0){
-    openTbody.innerHTML = '<tr><td colspan="12" style="color:var(--text-dim);">No open positions</td></tr>';
+  document.getElementById('openCount').textContent = `${openSymbolRows.length} symbols`;
+  if(openSymbolRows.length === 0){
+    openTbody.innerHTML = '<tr><td colspan="13" style="color:var(--text-dim);">No open positions</td></tr>';
   }
-  openTranches.sort((a,b) => a.symbol.localeCompare(b.symbol) || a.trancheNum - b.trancheNum).forEach(t => {
-    const priceObj = prices[t.symbol];
+  openSymbolRows.sort((a,b) => a.symbol.localeCompare(b.symbol)).forEach(agg => {
+    const priceObj = prices[agg.symbol];
     const cur = priceObj ? priceObj.price : undefined;
-    const invested = t.qtyRemaining * t.buyPrice;
-    const curVal = cur !== undefined ? t.qtyRemaining * cur : null;
-    const unrealPct = cur !== undefined ? ((cur - t.buyPrice)/t.buyPrice)*100 : null;
+    const invested = agg.notional;
+    const curVal = cur !== undefined ? agg.qty * cur : null;
+    const unrealPct = cur !== undefined ? ((cur - agg.avgBuyPrice)/agg.avgBuyPrice)*100 : null;
     const unrealPnl = curVal !== null ? curVal - invested : null;
-    const daysOpen = dateDiffDays(t.buyDate, todayISO());
+    const daysOpen = dateDiffDays(agg.earliestDate, todayISO());
+
+    const hitCheck = computeDaysToHit(agg.symbol, agg.earliestDate, agg.avgBuyPrice, thresholdPct);
+    let daysToHitText = '—';
+    if(hitCheck.reason === 'no-history') daysToHitText = 'No history yet';
+    else if(hitCheck.reason === 'not-yet-in-history') daysToHitText = 'Not yet';
+    else if(hitCheck.days !== null) daysToHitText = `${hitCheck.days}d`;
+
     let status;
     if(unrealPct === null) status = '<span class="pill open">No price</span>';
     else status = unrealPct >= thresholdPct
-      ? `<span class="pill win">Hit (~${daysOpen}d)</span>`
-      : `<span class="pill loss">Not yet (${daysOpen}d open)</span>`;
+      ? `<span class="pill win">Hit</span>`
+      : `<span class="pill loss">Not yet</span>`;
+
+    const isIncomplete = incompleteSymbols.has(agg.symbol);
+    const symLabel = isIncomplete ? `${agg.symbol} <span class="pill loss" title="Some sells for this symbol had no matching buy in your uploaded file">⚠ Incomplete</span>` : `<b>${agg.symbol}</b>`;
 
     const tr = document.createElement('tr');
+    if(isIncomplete) tr.style.background = 'rgba(232,179,76,0.06)';
     tr.innerHTML = `
-      <td><b>${t.symbol}</b></td>
-      <td>#${t.trancheNum}</td>
-      <td>${t.buyDate}</td>
-      <td>${t.qtyRemaining}</td>
-      <td>${fmtINR(t.buyPrice)}</td>
+      <td>${symLabel}</td>
+      <td>${agg.tranches.length > 1 ? `${agg.tranches.length} (#${Math.min(...agg.tranches)}–#${Math.max(...agg.tranches)})` : `#${agg.tranches[0]}`}</td>
+      <td>${agg.earliestDate}</td>
+      <td>${agg.qty}</td>
+      <td>${fmtINR(agg.avgBuyPrice)}</td>
       <td>${fmtINR(invested)}</td>
-      <td><input type="number" class="cur-input" data-symbol="${t.symbol}" value="${cur !== undefined ? cur : ''}" placeholder="₹"></td>
+      <td><input type="number" class="cur-input" data-symbol="${agg.symbol}" value="${cur !== undefined ? cur : ''}" placeholder="₹"></td>
       <td>${curVal !== null ? fmtINR(curVal) : '—'}</td>
       <td class="${unrealPct !== null ? (unrealPct>=0?'pnl-pos':'pnl-neg') : ''}">${unrealPct !== null ? fmtPct(unrealPct) : '—'}</td>
       <td class="${unrealPnl !== null ? (unrealPnl>=0?'pnl-pos':'pnl-neg') : ''}">${unrealPnl !== null ? fmtINR(unrealPnl) : '—'}</td>
       <td>${daysOpen}</td>
+      <td>${daysToHitText}</td>
       <td>${status}</td>
     `;
     openTbody.appendChild(tr);
@@ -674,10 +763,11 @@ function renderOverview(state){
   });
 }
 
-function renderStockwise(state){
-  const { lotsBySymbol } = state;
+function renderStockwise(rawState){
+  const state = applyHideFilter(rawState);
+  const { lotsBySymbol, incompleteSymbols } = state;
   const symbols = Object.keys(lotsBySymbol).sort();
-  document.getElementById('stockCount').textContent = `${symbols.length} symbols`;
+  document.getElementById('stockCount').textContent = `${symbols.length} symbols` + (rawState.incompleteSymbols.size && hideIncomplete ? ` (${rawState.incompleteSymbols.size} hidden)` : '');
   const container = document.getElementById('stockList');
   container.innerHTML = '';
 
@@ -688,12 +778,13 @@ function renderStockwise(state){
     const total = allClosuresForSym.length;
     const symHitRatio = total ? (hits/total*100).toFixed(1) : '—';
     const openQty = lots.reduce((s,l)=>s+l.qtyRemaining,0);
+    const isIncomplete = incompleteSymbols.has(sym);
 
     const det = document.createElement('details');
     det.className = 'symgroup';
     const summary = document.createElement('summary');
     summary.innerHTML = `
-      <span>${sym}</span>
+      <span>${sym}${isIncomplete ? ' <span class="pill loss" title="Some sells for this symbol had no matching buy in your uploaded file">⚠ Incomplete history</span>' : ''}</span>
       <span class="sym-badges">
         <span>Hit ratio: <b>${symHitRatio}${total?'%':''}</b></span>
         <span>Closed: <b>${total}</b></span>
@@ -773,7 +864,8 @@ function periodKey(dateStr, gran){
   return { key, label: key, sort: y*100+(m+1) };
 }
 
-function renderTimebased(state){
+function renderTimebased(rawState){
+  const state = applyHideFilter(rawState);
   const { allClosures, allTranches } = state;
   const gran = currentGran;
   document.getElementById('periodLabel').textContent = gran.charAt(0).toUpperCase()+gran.slice(1);
@@ -839,7 +931,8 @@ function renderTimebased(state){
   });
 }
 
-function renderStats(state){
+function renderStats(rawState){
+  const state = applyHideFilter(rawState);
   const { allTranches, allClosures } = state;
   const totalInvestedLifetime = allTranches.reduce((s,t)=>s+t.qtyOriginal*t.buyPrice,0);
   const currentInvested = allTranches.reduce((s,t)=>s+t.qtyRemaining*t.buyPrice,0);
@@ -847,6 +940,12 @@ function renderStats(state){
   document.getElementById('s4CurrentInvested').textContent = fmtINR(currentInvested);
   document.getElementById('s4TotalTrades').textContent = allTranches.length;
   document.getElementById('s4TotalClosed').textContent = allClosures.length;
+
+  const { expectancy, winRate, avgWinPct, avgLossPct } = computeExpectancy(allClosures);
+  document.getElementById('s4Expectancy').textContent = expectancy !== null ? fmtPct(expectancy) : '—';
+  document.getElementById('s4WinRate').textContent = winRate !== null ? winRate.toFixed(1)+'%' : '—';
+  document.getElementById('s4AvgWin').textContent = avgWinPct !== null ? fmtPct(avgWinPct) : '—';
+  document.getElementById('s4AvgLoss').textContent = avgLossPct !== null ? fmtPct(-avgLossPct) : '—';
 
   const maxTranche = allTranches.reduce((m,t)=>Math.max(m,t.trancheNum),0);
   const trancheTbody = document.getElementById('trancheStatsTbody');
@@ -906,15 +1005,21 @@ fileInput.addEventListener('change', (e) => { if(e.target.files[0]) loadFile(e.t
 dropzone.addEventListener('drop', (e) => { const file = e.dataTransfer.files[0]; if(file) loadFile(file); });
 
 document.getElementById('clearBtn').addEventListener('click', () => {
-  txRows = []; prices = {};
+  txRows = []; prices = {}; priceHistory = {};
   localStorage.removeItem(STORAGE_KEY);
   localStorage.removeItem(PRICE_KEY);
+  localStorage.removeItem(HISTORY_KEY);
   fileInput.value = '';
   renderAll();
 });
 document.getElementById('refreshPricesBtn').addEventListener('click', () => {
   Object.keys(prices).forEach(sym => { if(prices[sym].source === 'manual') delete prices[sym]; });
   fetchAllPrices();
+});
+document.getElementById('hideIncompleteToggle').addEventListener('change', (e) => {
+  hideIncomplete = e.target.checked;
+  localStorage.setItem(HIDE_KEY, hideIncomplete ? '1' : '0');
+  renderAll();
 });
 thresholdInput.addEventListener('change', () => {
   localStorage.setItem(THRESH_KEY, thresholdInput.value);
@@ -939,9 +1044,13 @@ document.getElementById('periodTabs').addEventListener('click', (e) => {
 (function init(){
   const savedTx = localStorage.getItem(STORAGE_KEY);
   const savedPrices = localStorage.getItem(PRICE_KEY);
+  const savedHistory = localStorage.getItem(HISTORY_KEY);
   const savedThreshold = localStorage.getItem(THRESH_KEY);
+  const savedHide = localStorage.getItem(HIDE_KEY);
   if(savedThreshold) thresholdInput.value = savedThreshold;
+  if(savedHide === '1'){ hideIncomplete = true; document.getElementById('hideIncompleteToggle').checked = true; }
   if(savedPrices){ try{ prices = JSON.parse(savedPrices); }catch(e){ prices = {}; } }
+  if(savedHistory){ try{ priceHistory = JSON.parse(savedHistory); }catch(e){ priceHistory = {}; } }
   if(savedTx){
     try{
       txRows = JSON.parse(savedTx);
