@@ -550,11 +550,11 @@ function applyHideFilter(state){
 }
 
 // ---------- Live price + historical price fetching ----------
-async function fetchOneSymbolData(symbol){
+async function fetchOneSymbolData(symbol, range){
   const suffixes = ['.NS', '.BO'];
   const attempts = [];
   for(const suf of suffixes){
-    const yUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol + suf)}?range=2y&interval=1d`;
+    const yUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol + suf)}?range=${range}&interval=1d`;
     const proxies = [
       { name: 'allorigins', url: `https://api.allorigins.win/raw?url=${encodeURIComponent(yUrl)}` },
       { name: 'corsproxy.io', url: `https://corsproxy.io/?${encodeURIComponent(yUrl)}` }
@@ -600,41 +600,58 @@ function computeDaysToHit(symbol, buyDate, buyPrice, thresholdPct){
   return { days: null, reason: 'not-yet-in-history' };
 }
 
+// FAST path: current price only, small payload (range=5d), for open positions on Page 1.
+// Runs in parallel batches instead of one-at-a-time, since network latency (not CPU) is the bottleneck.
 async function fetchAllPrices(){
   const state = computeState();
-  // Fetch for every symbol that ever appears, not just currently-open ones — closed
-  // tranches need history too, to answer "when did this actually cross the threshold".
-  const allSymbols = [...new Set(state.allTranches.map(t => t.symbol))];
-  if(allSymbols.length === 0) return;
+  const openSymbols = [...new Set(state.allTranches.filter(t => t.qtyRemaining > 1e-9).map(t => t.symbol))]
+    .filter(sym => !(prices[sym] && prices[sym].source === 'manual'));
+  if(openSymbols.length === 0) return;
   const btn = document.getElementById('refreshPricesBtn');
   const status = document.getElementById('priceStatus');
   btn.disabled = true;
   let done = 0, failCount = 0, lastError = '';
-  for(const sym of allSymbols){
-    if(prices[sym] && prices[sym].source === 'manual'){ done++; continue; }
-    status.textContent = `Fetching prices & history… (${done+1}/${allSymbols.length})`;
-    const result = await fetchOneSymbolData(sym);
-    if(result.price !== null){
-      prices[sym] = { price: result.price, source: 'auto', ts: Date.now() };
-      if(result.history.length) priceHistory[sym] = result.history;
-    } else {
-      failCount++;
-      lastError = result.error;
-    }
-    done++;
-    await new Promise(r => setTimeout(r, 120));
+  const CONCURRENCY = 6;
+  for(let i = 0; i < openSymbols.length; i += CONCURRENCY){
+    const batch = openSymbols.slice(i, i + CONCURRENCY);
+    status.textContent = `Fetching prices… (${Math.min(i+CONCURRENCY, openSymbols.length)}/${openSymbols.length})`;
+    const results = await Promise.all(batch.map(sym => fetchOneSymbolData(sym, '5d')));
+    batch.forEach((sym, idx) => {
+      const result = results[idx];
+      if(result.price !== null){
+        prices[sym] = { price: result.price, source: 'auto', ts: Date.now() };
+      } else {
+        failCount++;
+        lastError = result.error;
+      }
+      done++;
+    });
   }
   localStorage.setItem(PRICE_KEY, JSON.stringify(prices));
-  localStorage.setItem(HISTORY_KEY, JSON.stringify(priceHistory));
-  if(failCount === allSymbols.length){
+  if(failCount === openSymbols.length){
     status.innerHTML = `<span style="color:var(--loss)">All ${failCount} price fetches failed. Open browser console (F12) for details. Last error: ${lastError.slice(0,150)}</span>`;
   } else if(failCount > 0){
-    status.textContent = `Updated ${allSymbols.length - failCount}/${allSymbols.length} · ${failCount} failed (see console) · ${new Date().toLocaleTimeString('en-IN')}`;
+    status.textContent = `Updated ${openSymbols.length - failCount}/${openSymbols.length} · ${failCount} failed (see console) · ${new Date().toLocaleTimeString('en-IN')}`;
   } else {
-    status.textContent = `All ${allSymbols.length} symbols' prices + history updated · ${new Date().toLocaleTimeString('en-IN')}`;
+    status.textContent = `${openSymbols.length} prices updated · ${new Date().toLocaleTimeString('en-IN')}`;
   }
   btn.disabled = false;
   renderAll();
+}
+
+// ON-DEMAND path: fetch full 2y history for ONE symbol, used by the "Check Historical Hit"
+// button on the Stock-wise page. Fast because it's just one symbol, not the whole portfolio.
+async function fetchHistoryForOneSymbol(symbol){
+  const result = await fetchOneSymbolData(symbol, '2y');
+  if(result.history.length){
+    priceHistory[symbol] = result.history;
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(priceHistory));
+  }
+  if(result.price !== null && !(prices[symbol] && prices[symbol].source === 'manual')){
+    prices[symbol] = { price: result.price, source: 'auto', ts: Date.now() };
+    localStorage.setItem(PRICE_KEY, JSON.stringify(prices));
+  }
+  return result;
 }
 
 // ---------- Rendering ----------
@@ -807,6 +824,12 @@ function renderStockwise(rawState){
   const symbols = Object.keys(lotsBySymbol).sort();
   document.getElementById('stockCount').textContent = `${symbols.length} symbols` + (rawState.incompleteSymbols.size && hideIncomplete ? ` (${rawState.incompleteSymbols.size} hidden)` : '');
   const container = document.getElementById('stockList');
+
+  // Remember which symbol accordions were open, so an on-demand history fetch
+  // (which triggers a full re-render) doesn't collapse the panel the user is looking at.
+  const openSymbols = new Set();
+  container.querySelectorAll('details.symgroup[open]').forEach(d => { if(d.dataset.symbol) openSymbols.add(d.dataset.symbol); });
+
   container.innerHTML = '';
 
   symbols.forEach(sym => {
@@ -819,6 +842,8 @@ function renderStockwise(rawState){
     const isIncomplete = incompleteSymbols.has(sym);
 
     const det = document.createElement('details');
+    det.dataset.symbol = sym;
+    if(openSymbols.has(sym)) det.open = true;
     det.className = 'symgroup';
     const summary = document.createElement('summary');
     summary.innerHTML = `
@@ -846,9 +871,9 @@ function renderStockwise(rawState){
 
       const hitCheck = computeDaysToHit(sym, lot.buyDate, lot.buyPrice, state.thresholdPct);
       const histNote = document.createElement('div');
-      histNote.style.cssText = 'font-size:11px; color:var(--text-dim); margin-bottom:8px;';
+      histNote.style.cssText = 'font-size:11px; color:var(--text-dim); margin-bottom:8px; display:flex; align-items:center; gap:8px; flex-wrap:wrap;';
       if(hitCheck.reason === 'no-history'){
-        histNote.innerHTML = `📈 Historical target check: no price history fetched yet for ${sym} — click "↻ Refresh Prices" above.`;
+        histNote.innerHTML = `📈 <span>Historical target check not fetched yet for ${sym}.</span> <button class="mini-btn check-hist-btn" data-symbol="${sym}">Check Historical Hit</button>`;
       } else if(hitCheck.reason === 'not-yet-in-history'){
         histNote.innerHTML = `📈 Historical target check: hasn't closed at +${state.thresholdPct}% or more from ₹${lot.buyPrice.toFixed(2)} within the fetched price history.`;
       } else if(hitCheck.days !== null){
@@ -888,6 +913,22 @@ function renderStockwise(rawState){
 
     det.appendChild(body);
     container.appendChild(det);
+  });
+
+  container.querySelectorAll('.check-hist-btn').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      e.preventDefault();
+      const sym = e.target.dataset.symbol;
+      e.target.textContent = 'Checking…';
+      e.target.disabled = true;
+      const result = await fetchHistoryForOneSymbol(sym);
+      if(result.price === null && result.history.length === 0){
+        e.target.textContent = 'Failed — retry';
+        e.target.disabled = false;
+      } else {
+        renderAll();
+      }
+    });
   });
 }
 
