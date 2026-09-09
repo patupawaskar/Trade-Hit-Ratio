@@ -484,6 +484,8 @@ function computeState(){
 
   const lotsBySymbol = {};
   const trancheCounters = {};
+  const groupCounters = {};
+  const openQtyRunning = {}; // tracks actual shares held per symbol as we walk through time
   const allClosures = [];
   const warnings = [];
   const incompleteSymbols = new Set();
@@ -492,14 +494,22 @@ function computeState(){
   sorted.forEach(r => {
     tradeNum++;
     if(r.type === 'buy'){
+      const currentlyFlat = !(openQtyRunning[r.symbol] > 1e-9);
+      if(currentlyFlat){
+        // Previous position (if any) was fully closed — this is a genuinely NEW trade, not tranche #2/#3.
+        groupCounters[r.symbol] = (groupCounters[r.symbol] || 0) + 1;
+        trancheCounters[r.symbol] = 0;
+      }
       trancheCounters[r.symbol] = (trancheCounters[r.symbol] || 0) + 1;
       const lot = {
-        symbol: r.symbol, trancheNum: trancheCounters[r.symbol],
+        symbol: r.symbol, trancheNum: trancheCounters[r.symbol], groupNum: groupCounters[r.symbol],
+        isNewPosition: currentlyFlat,
         buyPrice: r.price, buyDate: r.date, qtyOriginal: r.qty, qtyRemaining: r.qty,
         buyTradeNum: tradeNum, closures: []
       };
       if(!lotsBySymbol[r.symbol]) lotsBySymbol[r.symbol] = [];
       lotsBySymbol[r.symbol].push(lot);
+      openQtyRunning[r.symbol] = (openQtyRunning[r.symbol] || 0) + r.qty;
     } else if(r.type === 'sell'){
       let remaining = r.qty;
       const list = lotsBySymbol[r.symbol] || [];
@@ -510,7 +520,7 @@ function computeState(){
         const consumed = Math.min(lot.qtyRemaining, remaining);
         const gainPct = ((r.price - lot.buyPrice) / lot.buyPrice) * 100;
         const closure = {
-          symbol: r.symbol, trancheNum: lot.trancheNum, qty: consumed,
+          symbol: r.symbol, trancheNum: lot.trancheNum, groupNum: lot.groupNum, qty: consumed,
           buyPrice: lot.buyPrice, buyDate: lot.buyDate, sellPrice: r.price, sellDate: r.date,
           gainPct, isHit: gainPct >= thresholdPct,
           daysToClose: dateDiffDays(lot.buyDate, r.date),
@@ -521,11 +531,13 @@ function computeState(){
         lot.closures.push(closure);
         lot.qtyRemaining -= consumed;
         remaining -= consumed;
+        openQtyRunning[r.symbol] = Math.max(0, (openQtyRunning[r.symbol] || 0) - consumed);
         if(lot.qtyRemaining <= 1e-9) li++;
       }
       if(remaining > 1e-9){
         warnings.push(`Trade #${tradeNum}: sold ${remaining.toFixed(2)} more ${r.symbol} than held (short selling not tracked) — excess ignored.`);
         incompleteSymbols.add(r.symbol);
+        openQtyRunning[r.symbol] = 0;
       }
     }
   });
@@ -860,7 +872,13 @@ function renderStockwise(rawState){
     const body = document.createElement('div');
     body.className = 'tranche-block';
 
-    lots.sort((a,b)=>a.trancheNum-b.trancheNum).forEach(lot => {
+    lots.sort((a,b)=> (a.groupNum - b.groupNum) || (a.trancheNum - b.trancheNum)).forEach((lot, i) => {
+      if(lot.isNewPosition && i > 0){
+        const divider = document.createElement('div');
+        divider.style.cssText = 'display:flex; align-items:center; gap:10px; margin:16px 0 10px; color:var(--text-dim); font-size:10.5px; text-transform:uppercase; letter-spacing:.06em;';
+        divider.innerHTML = `<div style="flex:1; height:1px; background:var(--line);"></div><span>New Trade — previous ${sym} position fully closed</span><div style="flex:1; height:1px; background:var(--line);"></div>`;
+        body.appendChild(divider);
+      }
       const title = document.createElement('div');
       title.className = 'tranche-title';
       const fullyClosed = lot.qtyRemaining <= 1e-9;
