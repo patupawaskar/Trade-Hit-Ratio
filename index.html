@@ -215,7 +215,7 @@
         <div class="panel-head"><b>Open Positions</b><span id="openCount">0 symbols</span></div>
         <div class="panel-body" style="overflow-x:auto;">
         <table>
-          <thead><tr><th>Symbol</th><th>Tranches</th><th>First Entry</th><th>Total Qty</th><th>Avg Buy Price</th><th>Invested</th><th>Current Price</th><th>Current Value</th><th>Unreal. %</th><th>Unreal. P&amp;L</th><th>Days Since Entry</th><th>Status</th></tr></thead>
+          <thead><tr><th>Symbol</th><th>Tranches</th><th>First Entry</th><th>Total Qty</th><th>Avg Buy Price</th><th>Invested</th><th>Current Price</th><th>Current Value</th><th>Unreal. %</th><th>Unreal. P&amp;L</th><th>Trading Days Since Entry</th><th>Status</th></tr></thead>
           <tbody id="openTbody"></tbody>
         </table>
         </div>
@@ -361,6 +361,47 @@ function dateAddDays(dateStr, days){
   if(isNaN(d)) return dateStr;
   d.setDate(d.getDate() + days);
   return d.toISOString().split('T')[0];
+}
+
+// NSE/BSE equity-segment trading holidays (weekday closures only — weekends are
+// already excluded separately). Sourced from official exchange holiday calendars.
+// If your trades extend beyond this range, those extra dates just won't be
+// excluded, so day counts near the edges of 2025/2026 are the most reliable.
+const MARKET_HOLIDAYS = new Set([
+  // 2025
+  '2025-02-26', '2025-03-14', '2025-03-31', '2025-04-10', '2025-04-14',
+  '2025-04-18', '2025-05-01', '2025-08-15', '2025-08-27', '2025-10-02',
+  '2025-10-21', '2025-10-22', '2025-11-05', '2025-12-25',
+  // 2026
+  '2026-01-26', '2026-03-03', '2026-03-26', '2026-03-31', '2026-04-03',
+  '2026-04-14', '2026-05-01', '2026-05-28', '2026-06-26', '2026-09-14',
+  '2026-10-02', '2026-10-20', '2026-11-10', '2026-11-24', '2026-12-25'
+]);
+
+function isTradingDay(dateStr){
+  const d = new Date(dateStr);
+  if(isNaN(d)) return false;
+  const day = d.getUTCDay(); // 0 = Sunday, 6 = Saturday
+  if(day === 0 || day === 6) return false;
+  return !MARKET_HOLIDAYS.has(dateStr);
+}
+
+// Counts trading days strictly after startDateStr, up to and including endDateStr.
+// e.g. bought today -> 0. Bought yesterday (a trading day), today is a trading day -> 1.
+function countTradingDays(startDateStr, endDateStr){
+  const start = new Date(startDateStr);
+  const end = new Date(endDateStr);
+  if(isNaN(start) || isNaN(end) || end < start) return 0;
+  let count = 0;
+  let cur = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate()));
+  const endUTC = new Date(Date.UTC(end.getUTCFullYear(), end.getUTCMonth(), end.getUTCDate()));
+  cur.setUTCDate(cur.getUTCDate() + 1);
+  while(cur <= endUTC){
+    const iso = cur.toISOString().split('T')[0];
+    if(isTradingDay(iso)) count++;
+    cur.setUTCDate(cur.getUTCDate() + 1);
+  }
+  return count;
 }
 
 // ---------- CSV / XLSX loading ----------
@@ -789,7 +830,7 @@ function renderOverview(rawState){
     const curVal = cur !== undefined ? agg.qty * cur : null;
     const unrealPct = cur !== undefined ? ((cur - agg.avgBuyPrice)/agg.avgBuyPrice)*100 : null;
     const unrealPnl = curVal !== null ? curVal - invested : null;
-    const daysOpen = dateDiffDays(agg.earliestDate, todayISO());
+    const daysOpen = countTradingDays(agg.earliestDate, todayISO());
 
     let status;
     if(unrealPct === null) status = '<span class="pill open">No price</span>';
@@ -883,8 +924,8 @@ function renderStockwise(rawState){
       title.className = 'tranche-title';
       const fullyClosed = lot.qtyRemaining <= 1e-9;
       const finalExit = fullyClosed && lot.closures.length ? lot.closures[lot.closures.length-1].sellDate : null;
-      const lifespan = finalExit ? dateDiffDays(lot.buyDate, finalExit) : dateDiffDays(lot.buyDate, todayISO());
-      title.textContent = `Tranche #${lot.trancheNum} — bought ${lot.qtyOriginal} @ ${fmtINR(lot.buyPrice)} on ${lot.buyDate} · ${fullyClosed ? `closed after ${lifespan}d (exit ${finalExit})` : `still open, ${lifespan}d elapsed`}`;
+      const lifespan = finalExit ? countTradingDays(lot.buyDate, finalExit) : countTradingDays(lot.buyDate, todayISO());
+      title.textContent = `Tranche #${lot.trancheNum} — bought ${lot.qtyOriginal} @ ${fmtINR(lot.buyPrice)} on ${lot.buyDate} · ${fullyClosed ? `closed after ${lifespan} trading days (exit ${finalExit})` : `still open, ${lifespan} trading days elapsed`}`;
       body.appendChild(title);
 
       const hitCheck = computeDaysToHit(sym, lot.buyDate, lot.buyPrice, state.thresholdPct);
