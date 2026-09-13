@@ -212,6 +212,33 @@
       <div class="info-note">Open positions are grouped by symbol — average buy price blends all open tranches. See the Stock-wise page for per-tranche detail, including historical "days to hit" for each individual purchase.</div>
 
       <div class="panel">
+        <div class="panel-head">
+          <b>XIRR — Annualized Return</b>
+          <span id="xirrStatus"></span>
+        </div>
+        <div class="panel-body" style="padding:18px 20px;">
+          <div class="stat-grid" style="margin-bottom:16px;">
+            <div class="stat amber"><div class="v" id="statXirr">—</div><div class="k">Portfolio XIRR</div></div>
+            <div class="stat" id="benchXirrCard"><div class="v" id="statBenchXirr">—</div><div class="k" id="benchXirrLabel">Benchmark XIRR</div></div>
+            <div class="stat" id="xirrDeltaCard"><div class="v" id="statXirrDelta">—</div><div class="k">Outperformance (pp)</div></div>
+          </div>
+          <div class="thresh-inline" style="gap:10px;">
+            <label for="benchmarkSelect">Compare against:</label>
+            <select id="benchmarkSelect" style="background:var(--panel-2); border:1px solid var(--line); border-radius:6px; color:var(--text); font-family:'IBM Plex Mono',monospace; font-size:12px; padding:6px 10px;">
+              <option value="">None</option>
+              <option value="NIFTY50">Nifty 50</option>
+              <option value="NIFTY500">Nifty 500</option>
+              <option value="NIFTYSMLCAP100">Nifty Smallcap 100</option>
+              <option value="NIFTYSMLCAP250">Nifty Smallcap 250</option>
+              <option value="NIFTYMICROCAP250">Nifty Microcap 250</option>
+              <option value="BSESMALLCAP">S&amp;P BSE SmallCap</option>
+            </select>
+            <button class="btn" id="refreshBenchmarkBtn" style="display:none;">↻ Refresh Benchmark Data</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel">
         <div class="panel-head"><b>Open Positions</b><span id="openCount">0 symbols</span></div>
         <div class="panel-body" style="overflow-x:auto;">
         <table>
@@ -307,6 +334,17 @@ const STORAGE_KEY = 'hitratio_tx_v3';
 const PRICE_KEY = 'hitratio_prices_v3';
 const THRESH_KEY = 'hitratio_threshold_v3';
 const HISTORY_KEY = 'hitratio_history_v3';
+const BENCHMARK_KEY = 'hitratio_benchmark_v3';
+const BENCHMARK_HISTORY_KEY = 'hitratio_benchhistory_v3';
+
+const BENCHMARKS = {
+  NIFTY50: { label: 'Nifty 50', ticker: '^NSEI' },
+  NIFTY500: { label: 'Nifty 500', ticker: '^CRSLDX' },
+  NIFTYSMLCAP100: { label: 'Nifty Smallcap 100', ticker: '^CNXSC' },
+  NIFTYSMLCAP250: { label: 'Nifty Smallcap 250', ticker: 'NIFTYSMLCAP250.NS' },
+  NIFTYMICROCAP250: { label: 'Nifty Microcap 250', ticker: 'NIFTY_MICROCAP250.NS' },
+  BSESMALLCAP: { label: 'S&P BSE SmallCap', ticker: 'BSE-SMLCAP.BO' }
+};
 const HIDE_KEY = 'hitratio_hideincomplete_v3';
 const DISMISS_KEY = 'hitratio_dismissedwarnings_v3';
 let txRows = [];
@@ -316,6 +354,8 @@ let periodChartInstance = null;
 let currentGran = 'month';
 let hideIncomplete = false;
 let dismissedWarnings = new Set();
+let selectedBenchmark = ''; // key into BENCHMARKS, or '' for none
+let benchmarkHistories = {}; // ticker -> [{date, close}, ...] ascending
 
 const fileInput = document.getElementById('fileInput');
 const dropzone = document.getElementById('dropzone');
@@ -351,6 +391,174 @@ function computeExpectancy(closures){
   return { expectancy, winRate: winRate*100, avgWinPct, avgLossPct };
 }
 function todayISO(){ return new Date().toISOString().split('T')[0]; }
+
+// ---------- XIRR ----------
+// Standard money-weighted annualized return: solve for r such that
+// sum( CF_i / (1+r)^(years_i) ) = 0, where years_i is time from the first cashflow.
+function xirrNPV(flows, rate){
+  return flows.reduce((sum, cf) => {
+    const base = 1 + rate;
+    if(base <= 0) return NaN;
+    return sum + cf.amount / Math.pow(base, cf.years);
+  }, 0);
+}
+function xirrDerivative(flows, rate){
+  const base = 1 + rate;
+  if(base <= 0) return NaN;
+  return flows.reduce((sum, cf) => sum - (cf.years * cf.amount) / Math.pow(base, cf.years + 1), 0);
+}
+function xirrBisection(flows){
+  let lo = -0.9999, hi = 10;
+  let fLo = xirrNPV(flows, lo), fHi = xirrNPV(flows, hi);
+  if(isNaN(fLo) || isNaN(fHi) || fLo * fHi > 0){
+    hi = 100; fHi = xirrNPV(flows, hi);
+    if(isNaN(fHi) || fLo * fHi > 0) return null;
+  }
+  for(let i = 0; i < 200; i++){
+    const mid = (lo + hi) / 2;
+    const fMid = xirrNPV(flows, mid);
+    if(!isFinite(fMid)) return null;
+    if(Math.abs(fMid) < 1e-6) return mid;
+    if(fLo * fMid < 0){ hi = mid; } else { lo = mid; fLo = fMid; }
+  }
+  return (lo + hi) / 2;
+}
+// cashflows: [{date: 'YYYY-MM-DD', amount: number}] — negative = money out (buys), positive = money in (sells + terminal value of open positions)
+function computeXIRR(cashflows){
+  const clean = cashflows.filter(cf => cf.amount !== 0 && !isNaN(new Date(cf.date)));
+  if(clean.length < 2) return null;
+  const hasPositive = clean.some(cf => cf.amount > 0);
+  const hasNegative = clean.some(cf => cf.amount < 0);
+  if(!hasPositive || !hasNegative) return null; // no root possible — all money one direction
+
+  const sorted = [...clean].sort((a,b) => new Date(a.date) - new Date(b.date));
+  const t0 = new Date(sorted[0].date).getTime();
+  const flows = sorted.map(cf => ({
+    amount: cf.amount,
+    years: (new Date(cf.date).getTime() - t0) / (365 * 86400000)
+  }));
+  if(flows[flows.length - 1].years < 1/365) return null; // all same day, no time value to solve for
+
+  // Try Newton-Raphson first (fast), fall back to bisection if it doesn't converge cleanly.
+  let rate = 0.1;
+  let converged = false;
+  for(let i = 0; i < 100; i++){
+    const f = xirrNPV(flows, rate);
+    const df = xirrDerivative(flows, rate);
+    if(!isFinite(f) || !isFinite(df) || Math.abs(df) < 1e-12) break;
+    let next = rate - f / df;
+    if(next <= -0.9999) next = -0.9999 + 1e-6;
+    if(Math.abs(next - rate) < 1e-9){ rate = next; converged = true; break; }
+    rate = next;
+  }
+  if(!converged || Math.abs(xirrNPV(flows, rate)) > 1){
+    const biRate = xirrBisection(flows);
+    if(biRate === null) return null;
+    rate = biRate;
+  }
+  if(!isFinite(rate) || isNaN(rate)) return null;
+  return rate * 100; // as a percentage
+}
+
+// Builds the buy/sell/terminal-value cashflow series for a set of tranches (portfolio-wide or one symbol).
+// Open positions are valued at their live price when available; falls back to cost basis (0% contribution)
+// when no price has been fetched yet, and flags that via anyPriceMissing.
+function buildCashflows(tranches){
+  const realized = [];
+  let anyPriceMissing = false;
+  let terminalAmount = 0;
+  tranches.forEach(t => {
+    realized.push({ date: t.buyDate, amount: -(t.qtyOriginal * t.buyPrice) });
+    t.closures.forEach(c => realized.push({ date: c.sellDate, amount: c.qty * c.sellPrice }));
+    if(t.qtyRemaining > 1e-9){
+      const priceObj = prices[t.symbol];
+      if(priceObj){
+        terminalAmount += t.qtyRemaining * priceObj.price;
+      } else {
+        anyPriceMissing = true;
+        terminalAmount += t.qtyRemaining * t.buyPrice;
+      }
+    }
+  });
+  // Back-compat shape: full cashflow list including the portfolio's own terminal value.
+  const cashflows = [...realized, { date: todayISO(), amount: terminalAmount }];
+  return { cashflows, realized, terminalAmount, anyPriceMissing };
+}
+
+// ---------- Benchmark comparison ----------
+// Fetches a raw ticker (index symbols like ^NSEI, or already-suffixed ones like BSE-SMLCAP.BO)
+// without appending .NS/.BO, since indices use their own ticker conventions.
+async function fetchRawTickerHistory(ticker, range){
+  const yUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}?range=${range}&interval=1d`;
+  const proxies = [
+    { name: 'allorigins', url: `https://api.allorigins.win/raw?url=${encodeURIComponent(yUrl)}` },
+    { name: 'corsproxy.io', url: `https://corsproxy.io/?${encodeURIComponent(yUrl)}` }
+  ];
+  for(const p of proxies){
+    try{
+      const res = await fetch(p.url, {cache:'no-store'});
+      if(!res.ok) continue;
+      const json = await res.json();
+      const result = json && json.chart && json.chart.result && json.chart.result[0];
+      if(!result || !result.timestamp) continue;
+      const closes = result.indicators && result.indicators.quote && result.indicators.quote[0] ? result.indicators.quote[0].close : [];
+      const history = result.timestamp.map((ts, i) => ({
+        date: new Date(ts * 1000).toISOString().split('T')[0],
+        close: closes[i]
+      })).filter(h => typeof h.close === 'number');
+      if(history.length) return { history, error: null };
+    } catch(e){ /* try next proxy */ }
+  }
+  return { history: [], error: `Could not fetch ${ticker}` };
+}
+
+// Finds the closing price on the given date, or the nearest earlier trading day if the exact date is missing.
+function findCloseOnOrBefore(history, dateStr){
+  if(!history || !history.length) return null;
+  let result = null;
+  for(const h of history){
+    if(h.date <= dateStr) result = h.close; else break;
+  }
+  return result;
+}
+
+// Replays the SAME buy/sell cashflow dates and amounts as the real portfolio, but as if that
+// money had been invested in the benchmark index instead — then values the resulting notional
+// index holding at today's price. This isolates "did my stock-picking beat just buying the index".
+function computeBenchmarkXIRR(realizedCashflows, history){
+  if(!history || history.length < 2) return null;
+  let units = 0;
+  const sorted = [...realizedCashflows].sort((a,b) => new Date(a.date) - new Date(b.date));
+  for(const cf of sorted){
+    const price = findCloseOnOrBefore(history, cf.date);
+    if(price === null || price <= 0) continue;
+    if(cf.amount < 0) units += (-cf.amount) / price;
+    else units -= cf.amount / price;
+  }
+  const lastEntry = history[history.length - 1];
+  const terminalValue = units * lastEntry.close;
+  // Use the benchmark's actual last price date (not "today") as the terminal cashflow date —
+  // avoids overstating elapsed time if the fetch is a day or two behind the calendar date.
+  const benchCashflows = [...sorted, { date: lastEntry.date, amount: terminalValue }];
+  return computeXIRR(benchCashflows);
+}
+
+async function fetchBenchmarkData(benchmarkKey){
+  const bench = BENCHMARKS[benchmarkKey];
+  if(!bench) return;
+  const status = document.getElementById('xirrStatus');
+  status.textContent = `Fetching ${bench.label}…`;
+  const result = await fetchRawTickerHistory(bench.ticker, '5y');
+  if(result.history.length){
+    benchmarkHistories[bench.ticker] = result.history;
+    localStorage.setItem(BENCHMARK_HISTORY_KEY, JSON.stringify(benchmarkHistories));
+    status.textContent = '';
+  } else {
+    status.innerHTML = `<span style="color:var(--loss)">Could not fetch ${bench.label} data.</span>`;
+  }
+  renderAll();
+}
+
 function dateDiffDays(a,b){
   const da = new Date(a), db = new Date(b);
   if(isNaN(da) || isNaN(db)) return null;
@@ -777,6 +985,43 @@ function renderOverview(rawState){
   const realizedPnl = allClosures.reduce((s,c)=>s+c.pnl,0);
   const { expectancy } = computeExpectancy(allClosures);
 
+  // ---- XIRR ----
+  const { realized: realizedCashflows, terminalAmount, cashflows: xirrCashflows } = buildCashflows(allTranches);
+  const portfolioXirr = computeXIRR(xirrCashflows);
+  document.getElementById('statXirr').textContent = portfolioXirr !== null ? fmtPct(portfolioXirr) : 'N/A';
+
+  const benchXirrLabelEl = document.getElementById('benchXirrLabel');
+  const benchCard = document.getElementById('benchXirrCard');
+  const deltaCard = document.getElementById('xirrDeltaCard');
+  if(!selectedBenchmark){
+    document.getElementById('statBenchXirr').textContent = '—';
+    benchXirrLabelEl.textContent = 'Benchmark XIRR';
+    document.getElementById('statXirrDelta').textContent = '—';
+    benchCard.className = 'stat';
+    deltaCard.className = 'stat';
+  } else {
+    const bench = BENCHMARKS[selectedBenchmark];
+    benchXirrLabelEl.textContent = bench.label + ' XIRR';
+    const history = benchmarkHistories[bench.ticker];
+    if(!history){
+      document.getElementById('statBenchXirr').textContent = '…';
+      document.getElementById('statXirrDelta').textContent = '—';
+      fetchBenchmarkData(selectedBenchmark); // triggers async fetch, re-renders when done
+    } else {
+      const benchXirr = computeBenchmarkXIRR(realizedCashflows, history);
+      document.getElementById('statBenchXirr').textContent = benchXirr !== null ? fmtPct(benchXirr) : 'N/A';
+      benchCard.className = 'stat amber';
+      if(portfolioXirr !== null && benchXirr !== null){
+        const delta = portfolioXirr - benchXirr;
+        document.getElementById('statXirrDelta').textContent = (delta >= 0 ? '+' : '') + delta.toFixed(2) + ' pp';
+        deltaCard.className = 'stat ' + (delta >= 0 ? 'win' : 'loss');
+      } else {
+        document.getElementById('statXirrDelta').textContent = 'N/A';
+        deltaCard.className = 'stat';
+      }
+    }
+  }
+
   const openTranches = allTranches.filter(t => t.qtyRemaining > 1e-9);
   let unrealizedPnl = 0, investedOpen = 0, currentValueOpen = 0, anyPriceMissing = false;
   openTranches.forEach(t => {
@@ -1173,6 +1418,16 @@ document.getElementById('hideIncompleteToggle').addEventListener('change', (e) =
   localStorage.setItem(HIDE_KEY, hideIncomplete ? '1' : '0');
   renderAll();
 });
+document.getElementById('benchmarkSelect').addEventListener('change', (e) => {
+  selectedBenchmark = e.target.value;
+  localStorage.setItem(BENCHMARK_KEY, selectedBenchmark);
+  const refreshBtn = document.getElementById('refreshBenchmarkBtn');
+  refreshBtn.style.display = selectedBenchmark ? 'inline-block' : 'none';
+  renderAll();
+});
+document.getElementById('refreshBenchmarkBtn').addEventListener('click', () => {
+  if(selectedBenchmark) fetchBenchmarkData(selectedBenchmark);
+});
 thresholdInput.addEventListener('change', () => {
   localStorage.setItem(THRESH_KEY, thresholdInput.value);
   renderAll();
@@ -1200,6 +1455,14 @@ document.getElementById('periodTabs').addEventListener('click', (e) => {
   const savedThreshold = localStorage.getItem(THRESH_KEY);
   const savedHide = localStorage.getItem(HIDE_KEY);
   const savedDismissed = localStorage.getItem(DISMISS_KEY);
+  const savedBenchmark = localStorage.getItem(BENCHMARK_KEY);
+  const savedBenchHistory = localStorage.getItem(BENCHMARK_HISTORY_KEY);
+  if(savedBenchmark && BENCHMARKS[savedBenchmark]){
+    selectedBenchmark = savedBenchmark;
+    document.getElementById('benchmarkSelect').value = savedBenchmark;
+    document.getElementById('refreshBenchmarkBtn').style.display = 'inline-block';
+  }
+  if(savedBenchHistory){ try{ benchmarkHistories = JSON.parse(savedBenchHistory); }catch(e){ benchmarkHistories = {}; } }
   if(savedDismissed){ try{ dismissedWarnings = new Set(JSON.parse(savedDismissed)); }catch(e){ dismissedWarnings = new Set(); } }
   if(savedThreshold) thresholdInput.value = savedThreshold;
   if(savedHide === '1'){ hideIncomplete = true; document.getElementById('hideIncompleteToggle').checked = true; }
