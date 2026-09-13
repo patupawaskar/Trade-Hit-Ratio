@@ -1269,13 +1269,13 @@ function renderTimebased(rawState){
   const periods = {};
   allClosures.forEach(c => {
     const pk = periodKey(c.sellDate, gran);
-    if(!periods[pk.key]) periods[pk.key] = { label: pk.label, sort: pk.sort, closures: [], opens: 0 };
+    if(!periods[pk.key]) periods[pk.key] = { label: pk.label, sort: pk.sort, closures: [], opens: [] };
     periods[pk.key].closures.push(c);
   });
   allTranches.forEach(t => {
     const pk = periodKey(t.buyDate, gran);
-    if(!periods[pk.key]) periods[pk.key] = { label: pk.label, sort: pk.sort, closures: [], opens: 0 };
-    periods[pk.key].opens++;
+    if(!periods[pk.key]) periods[pk.key] = { label: pk.label, sort: pk.sort, closures: [], opens: [] };
+    periods[pk.key].opens.push(t);
   });
 
   const sortedKeys = Object.keys(periods).sort((a,b)=>periods[a].sort - periods[b].sort);
@@ -1298,9 +1298,12 @@ function renderTimebased(rawState){
     hitRatios.push(hr === null ? 0 : hr);
 
     const tr = document.createElement('tr');
+    tr.className = 'period-row';
+    tr.style.cursor = 'pointer';
+    tr.dataset.periodKey = k;
     tr.innerHTML = `
-      <td><b>${p.label}</b></td>
-      <td>${p.opens}</td>
+      <td><span class="period-chevron" style="display:inline-block; width:12px; color:var(--text-dim);">▸</span><b>${p.label}</b></td>
+      <td>${p.opens.length}</td>
       <td>${p.closures.length}</td>
       <td>${hits}</td>
       <td>${misses}</td>
@@ -1309,6 +1312,44 @@ function renderTimebased(rawState){
       <td class="${pnl>=0?'pnl-pos':'pnl-neg'}">${fmtINR(pnl)}</td>
     `;
     tbody.appendChild(tr);
+
+    const detailTr = document.createElement('tr');
+    detailTr.className = 'period-detail-row';
+    detailTr.style.display = 'none';
+    const detailTd = document.createElement('td');
+    detailTd.colSpan = 8;
+    detailTd.style.cssText = 'padding:0; background:var(--panel-2);';
+
+    let detailHtml = '<div style="padding:14px 20px;">';
+    if(p.opens.length){
+      detailHtml += `<div style="font-size:11px; color:var(--amber); text-transform:uppercase; letter-spacing:.05em; margin-bottom:8px;">Positions Opened (${p.opens.length})</div>
+        <table style="margin-bottom:${p.closures.length?'16px':'0'};"><thead><tr><th>Symbol</th><th>Tranche</th><th>Date</th><th>Qty</th><th>Buy Price</th></tr></thead><tbody>`;
+      p.opens.sort((a,b)=> new Date(a.buyDate)-new Date(b.buyDate)).forEach(t => {
+        detailHtml += `<tr><td><b>${t.symbol}</b></td><td>#${t.trancheNum}</td><td>${t.buyDate}</td><td>${t.qtyOriginal}</td><td>${fmtINR(t.buyPrice)}</td></tr>`;
+      });
+      detailHtml += '</tbody></table>';
+    }
+    if(p.closures.length){
+      detailHtml += `<div style="font-size:11px; color:var(--amber); text-transform:uppercase; letter-spacing:.05em; margin-bottom:8px;">Trades Closed (${p.closures.length})</div>
+        <table><thead><tr><th>Symbol</th><th>Tranche</th><th>Date</th><th>Qty</th><th>Sell Price</th><th>Gain %</th><th>P&amp;L</th><th>Result</th></tr></thead><tbody>`;
+      p.closures.sort((a,b)=> new Date(a.sellDate)-new Date(b.sellDate)).forEach(c => {
+        detailHtml += `<tr><td><b>${c.symbol}</b></td><td>#${c.trancheNum}</td><td>${c.sellDate}</td><td>${c.qty}</td><td>${fmtINR(c.sellPrice)}</td><td class="${c.gainPct>=0?'pnl-pos':'pnl-neg'}">${fmtPct(c.gainPct)}</td><td class="${c.pnl>=0?'pnl-pos':'pnl-neg'}">${fmtINR(c.pnl)}</td><td><span class="pill ${c.isHit?'win':'loss'}">${c.isHit?'Hit':'Non-Hit'}</span></td></tr>`;
+      });
+      detailHtml += '</tbody></table>';
+    }
+    if(!p.opens.length && !p.closures.length){
+      detailHtml += '<span style="color:var(--text-dim); font-size:11.5px;">No trades in this period.</span>';
+    }
+    detailHtml += '</div>';
+    detailTd.innerHTML = detailHtml;
+    detailTr.appendChild(detailTd);
+    tbody.appendChild(detailTr);
+
+    tr.addEventListener('click', () => {
+      const isOpen = detailTr.style.display !== 'none';
+      detailTr.style.display = isOpen ? 'none' : 'table-row';
+      tr.querySelector('.period-chevron').textContent = isOpen ? '▸' : '▾';
+    });
   });
 
   const ctx = document.getElementById('periodChart').getContext('2d');
