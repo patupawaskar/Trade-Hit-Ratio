@@ -228,10 +228,10 @@
               <option value="">None</option>
               <option value="NIFTY50">Nifty 50</option>
               <option value="NIFTY500">Nifty 500</option>
-              <option value="NIFTYSMLCAP100">Nifty Smallcap 100</option>
-              <option value="NIFTYSMLCAP250">Nifty Smallcap 250</option>
-              <option value="NIFTYMICROCAP250">Nifty Microcap 250</option>
-              <option value="BSESMALLCAP">S&amp;P BSE SmallCap</option>
+              <option value="SENSEX">Sensex</option>
+              <option value="BSESMALLCAP250">BSE Small Cap 250</option>
+              <option value="NIFTYMIDCAP100">Nifty Mid Cap 100</option>
+              <option value="NIFTYMICROCAP250">Nifty Micro Cap 250</option>
             </select>
             <button class="btn" id="refreshBenchmarkBtn" style="display:none;">↻ Refresh Benchmark Data</button>
           </div>
@@ -340,10 +340,10 @@ const BENCHMARK_HISTORY_KEY = 'hitratio_benchhistory_v3';
 const BENCHMARKS = {
   NIFTY50: { label: 'Nifty 50', ticker: '^NSEI' },
   NIFTY500: { label: 'Nifty 500', ticker: '^CRSLDX' },
-  NIFTYSMLCAP100: { label: 'Nifty Smallcap 100', ticker: '^CNXSC' },
-  NIFTYSMLCAP250: { label: 'Nifty Smallcap 250', ticker: 'NIFTYSMLCAP250.NS' },
-  NIFTYMICROCAP250: { label: 'Nifty Microcap 250', ticker: 'NIFTY_MICROCAP250.NS' },
-  BSESMALLCAP: { label: 'S&P BSE SmallCap', ticker: 'BSE-SMLCAP.BO' }
+  SENSEX: { label: 'Sensex', ticker: '^BSESN' },
+  BSESMALLCAP250: { label: 'BSE Small Cap 250', ticker: 'SML250.BO' },
+  NIFTYMIDCAP100: { label: 'Nifty Mid Cap 100', ticker: 'NIFTY_MIDCAP_100.NS' },
+  NIFTYMICROCAP250: { label: 'Nifty Micro Cap 250', ticker: 'NIFTY_MICROCAP250.NS' }
 };
 const HIDE_KEY = 'hitratio_hideincomplete_v3';
 const DISMISS_KEY = 'hitratio_dismissedwarnings_v3';
